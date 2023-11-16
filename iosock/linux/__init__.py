@@ -4,6 +4,7 @@ import platform
 import multiprocessing
 import ctypes
 import threading
+import collections
 from .. import abstract
 
 class Client(abstract.ClientBase):
@@ -15,6 +16,13 @@ class Server(abstract.ServerBase):
         print("linux server")
         self.__buffer_size = 1024
         self.__is_running = multiprocessing.Value(ctypes.c_bool, False)
+        self.client_by_fileno = collections.defaultdict(dict)
+        
+    def create_client(self, client_socket):
+        return {
+            "socket" : client_socket,
+            "lock" : threading.Lock()
+        }
         
     def listen(self, listen_ip:str, listen_port:int, is_blocking:bool = False, backlog:int = 5):
         self.__listen_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -62,11 +70,13 @@ class Server(abstract.ServerBase):
             for detect_fileno, detect_event in events:
                 if detect_fileno == self.__listen_socket.fileno():
                     if detect_event & (select.EPOLLHUP | select.EPOLLOUT):
-                        self.__stop()
+                        self.__is_running.value = False
+                        self.__epoll.unregister(self.__listen_socket)
                         
                     elif detect_event & (select.EPOLLIN | select.EPOLLPRI):
                         client_socket, address = self.__listen_socket.accept()
                         client_socket.setblocking(False)
+                        self.client_by_fileno.update({client_socket.fileno(), self.create_client(client_socket)})
                         
                         client_eventmask = select.EPOLLIN | select.EPOLLPRI | select.EPOLLHUP | select.EPOLLRDHUP | select.EPOLLET
                         self.__epoll.register(client_socket, client_eventmask)
@@ -80,13 +90,15 @@ class Server(abstract.ServerBase):
                     print("close", "close_listener", detect_event & (select.EPOLLIN | select.EPOLLPRI), detect_event & (select.EPOLLHUP | select.EPOLLRDHUP))
                 
                 else:
-                    client_socket:socket.socket = socket.fromfd(detect_fileno)
+                    client = self.client_by_fileno.get(detect_fileno)
+                    client_socket:socket.socket = client['socket']
+                    
                     if detect_event & (select.EPOLLHUP | select.EPOLLRDHUP):
                         print("close", client_socket)
                         
                     elif detect_event & (select.EPOLLIN | select.EPOLLPRI):
-                        uuid_bytes = client_socket.recv(self.__buffer_size)
-                        print("r", type(uuid_bytes), uuid_bytes)
+                        recv_bytes = client_socket.recv(self.__buffer_size)
+                        print("r", type(recv_bytes), recv_bytes)
                         
                     else:
                         print("r", detect_fileno, detect_event)
