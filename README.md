@@ -1,2 +1,2 @@
 # epsock
-Epoll Socket
+Simple Socket I/O
