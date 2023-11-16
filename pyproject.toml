@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "socketio"
+version = "0.0.0"
+authors = [
+  { name="Chor", email="chorong8883@gmail.com" },
+]
+description = "Simple Socket I/O"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+classifiers = [
+    "Programming Language :: Python :: 3.10",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux"
+]
+keywords = ["socket", "socketio", "epoll", "kqueue"]
+
+[project.urls]
+"Homepage" = "https://github.com/chorong8883/socketio"
