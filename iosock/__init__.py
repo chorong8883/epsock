@@ -15,6 +15,18 @@ class Client:
         elif system == "Windows":
             print("Client Windows")
             
+    def connect(self, ip:str, port:int):
+        self.client.connect(ip, port)
+    
+    def close(self):
+        self.client.close()
+    
+    def join(self):
+        self.client.join()
+        
+    def send(self, data:bytes):
+        self.client.send(data)
+            
 class Server:
     def __init__(self):
         system = platform.system()
@@ -30,7 +42,9 @@ class Server:
 
     def start(self, listen_ip:str, listen_port:int, is_blocking:bool = False, backlog:int = 5):
         self.server.start(listen_ip, listen_port, is_blocking, backlog)
-    def join(self):
-        self.server.join()
+    
     def stop(self):
         self.server.stop()
+    
+    def join(self):
+        self.server.join()
