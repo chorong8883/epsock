@@ -3,12 +3,12 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "socketio"
+name = "iosock"
 version = "0.0.0"
 authors = [
   { name="Chor", email="chorong8883@gmail.com" },
 ]
-description = "Simple Socket I/O"
+description = "Simple I/O Socket"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = []
@@ -17,7 +17,7 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: POSIX :: Linux"
 ]
-keywords = ["socket", "socketio", "epoll", "kqueue"]
+keywords = ["socket", "iosock", "epoll", "kqueue"]
 
 [project.urls]
-"Homepage" = "https://github.com/chorong8883/socketio"
+"Homepage" = "https://github.com/chorong8883/iosock"
