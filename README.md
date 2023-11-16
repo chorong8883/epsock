@@ -1,2 +1,2 @@
-# socketio
-Simple Socket I/O
+# iosock
+Simple I/O Socket
