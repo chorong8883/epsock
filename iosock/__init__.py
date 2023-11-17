@@ -15,6 +15,18 @@ class Client:
         elif system == "Windows":
             print("Client Windows")
             
+    def connect(self, ip:str, port:int):
+        self.client.connect(ip, port)
+    
+    def close(self):
+        self.client.close()
+    
+    def send(self, data:bytes):
+        return self.client.send(data)
+        
+    def recv(self):
+        return self.client.recv()
+            
 class Server:
     def __init__(self):
         system = platform.system()
