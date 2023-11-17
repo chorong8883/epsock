@@ -9,7 +9,10 @@ class ClientBase(metaclass=abc.ABCMeta):
     def close(self): pass
     
     @abstractmethod
-    def join(self): pass
+    def send(self, data:bytes) -> int: pass
+    
+    @abstractmethod
+    def recv(self) -> bytes: pass
     
 class ServerBase(metaclass=abc.ABCMeta):
     @abstractmethod

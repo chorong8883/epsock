@@ -1,14 +1,16 @@
 import socket
+import traceback
 from .. import abstract
 
 class Client(abstract.ClientBase):
     def __init__(self) -> None:
         print("darwin client")
-        self.__buffer_size = 1024
+        self.__buffer_size = 10240
         
     def connect(self, ip:str, port:int):
         self.__client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.__client_socket.connect((ip, port))
+        self.__client_socket.setblocking(False)
         
         # sre = self.__receive_socket.recv(BUFFER_SIZE)
         # print("sre", sre)
@@ -26,8 +28,8 @@ class Client(abstract.ClientBase):
         #     self.__send_socket.close()
         #     self.__send_socket = None
         
-    def join(self):
-        self.__client_socket.recv(self.__buffer_size)
+    # def join(self):
+    #     self.__client_socket.recv(self.__buffer_size)
             
     def close(self):
         if self.__client_socket:
@@ -35,7 +37,10 @@ class Client(abstract.ClientBase):
             self.__client_socket.close()
             
     def send(self, data:bytes):
-        self.__client_socket.send(data)
+        return self.__client_socket.send(data)
+        
+    def recv(self):
+        return self.__client_socket.recv(self.__buffer_size)
         
 class Server:
     def __init__(self) -> None:

@@ -21,11 +21,11 @@ class Client:
     def close(self):
         self.client.close()
     
-    def join(self):
-        self.client.join()
-        
     def send(self, data:bytes):
-        self.client.send(data)
+        return self.client.send(data)
+        
+    def recv(self):
+        return self.client.recv()
             
 class Server:
     def __init__(self):
