@@ -48,3 +48,9 @@ class Server:
     
     def join(self):
         self.server.join()
+        
+    def recv(self):
+        return self.server.recv()
+    
+    def send(self, fileno:int, data:bytes):
+        self.server.send(fileno, data)
