@@ -30,7 +30,8 @@ class Server(abstract.ServerBase):
         return {
             "socket" : client_socket,
             "lock" : threading.Lock(),
-            "send_buffer" : b''
+            "send_buffer_queue" : queue.Queue(),
+            "sending_buffer" : b''
         }
         
     def listen(self, listen_ip:str, listen_port:int, is_blocking:bool = False, backlog:int = 5):
@@ -128,12 +129,7 @@ class Server(abstract.ServerBase):
         return self.__recv_queue.get()
     
     def send(self, fileno:int, data:bytes):
-        client_data = self.client_by_fileno.get(fileno)
-        client_lock:threading.Lock = client_data['lock']
-        client_lock.acquire()
-        client_socket:socket.socket = client_data['socket']
-        self.client_by_fileno[client_socket.fileno()]['send_buffer'] += data
-        client_lock.release()
+        self.client_by_fileno[fileno]['send_buffer_queue'].put_nowait(data)
         self.pool.apply_async(self.__io_send, args=(fileno,))
         
     def __io_recv(self, fileno):
@@ -168,28 +164,38 @@ class Server(abstract.ServerBase):
         client_lock.acquire()
         client_socket:socket.socket = client_data['socket']
         client_socket_fileno = client_socket.fileno()
-        send_data = client_data['send_buffer']
+        
+        sending_data = b''
+        if client_data['sending_buffer'] != b'':
+            sending_data = client_data['sending_buffer']
+        else:
+            try:
+                client_data['sending_buffer'] = client_data['send_buffer_queue'].get_nowait()
+            except queue.Empty:
+                return
+            sending_data = client_data['sending_buffer']
+        
         start_index = 0
-        end_index = len(send_data)
+        end_index = len(sending_data)
         try:
             while start_index < end_index:
-                send_length = client_socket.send(send_data[start_index:end_index])
+                send_length = client_socket.send(sending_data[start_index:end_index])
                 if send_length <= 0:
                     break
                 start_index += send_length
                 
         except BlockingIOError as e:
             if e.errno == socket.EAGAIN:
-                if self.client_by_fileno[client_socket_fileno]['send_buffer']:
-                    self.pool.apply_async(self.__io_send, args=(fileno,))
-                
+                pass
             else:
                 raise e
         if start_index < end_index:
-            self.client_by_fileno[client_socket_fileno]['send_buffer'] = self.client_by_fileno[client_socket_fileno]['send_buffer'][start_index:end_index]
-            
+            self.client_by_fileno[client_socket_fileno]['sending_buffer'] = self.client_by_fileno[client_socket_fileno]['sending_buffer'][start_index:end_index]
+            self.pool.apply_async(self.__io_send, args=(fileno,))
         else:
-            self.client_by_fileno[client_socket_fileno]['send_buffer'] = b''
+            self.client_by_fileno[client_socket_fileno]['sending_buffer'] = b''
+            if not client_data['send_buffer_queue'].empty():
+                self.pool.apply_async(self.__io_send, args=(fileno,))
         
         client_lock.release()
         
@@ -232,7 +238,7 @@ class Server(abstract.ServerBase):
     #             lock.acquire()
     #             client_socket:socket.socket = client_data['socket']
     #             client_socket_fileno = client_socket.fileno()
-    #             send_data = client_data['send_buffer']
+    #             send_data = client_data['send_buffer_queue']
     #             start_index = 0
     #             end_index = len(send_data)
     #             try:
@@ -251,9 +257,9 @@ class Server(abstract.ServerBase):
     #                 else:
     #                     raise e
     #             if start_index < end_index:
-    #                 self.client_by_fileno[client_socket_fileno]['send_buffer'] = self.client_by_fileno[client_socket_fileno]['send_buffer'][start_index:end_index]
+    #                 self.client_by_fileno[client_socket_fileno]['send_buffer_queue'] = self.client_by_fileno[client_socket_fileno]['send_buffer_queue'][start_index:end_index]
                     
     #             else:
-    #                 self.client_by_fileno[client_socket_fileno]['send_buffer'] = b''
+    #                 self.client_by_fileno[client_socket_fileno]['send_buffer_queue'] = b''
                 
     #             lock.release()
