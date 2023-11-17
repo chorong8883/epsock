@@ -30,7 +30,9 @@ class Server:
 
     def start(self, listen_ip:str, listen_port:int, is_blocking:bool = False, backlog:int = 5):
         self.server.start(listen_ip, listen_port, is_blocking, backlog)
-    def join(self):
-        self.server.join()
+    
     def stop(self):
         self.server.stop()
+    
+    def join(self):
+        self.server.join()
