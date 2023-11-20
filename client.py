@@ -60,9 +60,9 @@ closer = b'&sa@f#d$'
 packed_send_bytes = packing(send_bytes, starter, closer)
 packed_send_bytes_length = len(packed_send_bytes)
 
-send_queue = queue.Queue()
 kevents = collections.defaultdict(select.kevent)
 clients = collections.defaultdict(iosock.Client)
+recv_data = collections.defaultdict(iosock.Client)
 
 import multiprocessing
 import ctypes
@@ -80,7 +80,8 @@ def sending():
                 print(f"{event.ident} filter:{event.filter:#06x} flags:{event.flags:#06x} KQ_FILTER_READ:{select.KQ_FILTER_READ:#06x} KQ_EV_EOF:{select.KQ_EV_EOF:#06x}[{event.flags & select.KQ_EV_EOF:#06x}] KQ_EV_ENABLE:{select.KQ_EV_ENABLE:#06x} KQ_EV_ERROR:{select.KQ_EV_ERROR:#06x}[{event.flags & select.KQ_EV_ERROR:#06x}] KQ_EV_ADD:{select.KQ_EV_ADD:#06x}, KQ_EV_DELETE:{select.KQ_EV_DELETE:#06x}, KQ_EV_ONESHOT:{select.KQ_EV_ONESHOT:#06x}")
                 if event.flags & select.KQ_EV_ERROR:
                     print("event.flags & select.KQ_EV_ERROR")
-                    return
+                    kevents.pop(event.ident)
+                    continue
                     
                 if event.ident == detect_close_fd.fileno():
                     print(f"event.ident == detect_close_fd.fileno() {event}")
@@ -97,71 +98,33 @@ def sending():
                     else:
                         client : iosock.Client = clients[event.ident]
                         data = client.recv()
-                        sum_length += len(data)
-                        print(f"{len(data)}/{sum_length} {data[:10]}...{data[-10:]}")
-                
+                        if event.ident in recv_data:
+                            recv_data[event.ident] += data
+                        else:
+                            recv_data[event.ident] = data
+                            
+                        if -1<recv_data[event.ident].find(starter) and -1<recv_data[event.ident].find(closer):
+                            packed_recv_bytes_removed = recv_data[event.ident].removeprefix(starter)
+                            packed_recv_bytes_removed = packed_recv_bytes_removed.removesuffix(closer)
+                            unpacked_recv_bytes = unpacking(packed_recv_bytes_removed)
+                            print(len(unpacked_recv_bytes))
+                            print(f"{unpacked_recv_bytes[:10]}...{unpacked_recv_bytes[-10:]}")
+                            
                 else:
                     print('else', event)
         
-                
-            # client_fileno = send_queue.get()
-            # if not client_fileno:
-            #     break
-            # client:iosock.Client = clients[client_fileno]
-            
-            # start = time.time()
-            # for i in range(send_count):
-            #     send_bytes_index = 0
-            #     try:
-            #         while send_bytes_index < packed_send_bytes_length:
-            #             try:
-            #                 sended_length = client.send(packed_send_bytes[send_bytes_index:])
-            #                 send_bytes_index += sended_length
-            #             except BlockingIOError as e:
-            #                 if e.errno == socket.EAGAIN:
-            #                     pass
-            #                 else:
-            #                     raise e
-            #     except Exception as e:
-            #         print(e)
-            # end = time.time()
-            # print('sending result time elapsed:', end - start)
-        
-            # client.setblocking(True)
-        
-            # recv_bytes = b''
-            # try:
-            #     while not -1<recv_bytes.find(closer):
-            #         temp_data = client.recv()
-            #         recv_bytes += temp_data
-                    
-            # except Exception as e:
-            #     print('recv', e)
-            # # print(recv_bytes)
-            # packed_recv_bytes_removed = recv_bytes.removeprefix(starter)
-            # packed_recv_bytes_removed = packed_recv_bytes_removed.removesuffix(closer)
-            # unpacked_recv_bytes = unpacking(packed_recv_bytes_removed)
-            # print(len(unpacked_recv_bytes))
-            
     except Exception as e:
         print(f"worker exception: {e}\n{traceback.format_exc()}")
     kq.close()
 
 def signal_handler(num_recv_signal, frame):
     print(f"Get Signal: {signal.Signals(num_recv_signal).name}")
-    # is_running.value = False
+    is_running.value = False
     try:
         closer_fd.shutdown(socket.SHUT_RDWR)
     except Exception as e:
         print(e)
-    send_queue.put_nowait(None)
-    # for fd in clients.keys():
-    #     try:
-    #         client:iosock.Client = clients[fd]
-    #         client.close()
-    #     except Exception as e:
-    #         print(e)
-
+    
 if __name__ == '__main__':
     try:
         signal.signal(signal.SIGINT, signal_handler)
@@ -195,4 +158,4 @@ if __name__ == '__main__':
                 print(e)
     except Exception as e:
         print(f"main exception: {e}\n{traceback.format_exc()}")
-        send_queue.put_nowait(None)
+        
