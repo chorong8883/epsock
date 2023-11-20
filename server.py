@@ -52,6 +52,13 @@ def recv_threading():
             
         if -1<recv_data[fileno].find(starter) and -1<recv_data[fileno].find(closer):
             print(f"recv total: {len(recv_data[fileno]):7,}")
+            
+            packed_recv_bytes_removed = recv_data[fileno].removeprefix(starter)
+            packed_recv_bytes_removed = packed_recv_bytes_removed.removesuffix(closer)
+            unpacked_recv_bytes = unpacking(packed_recv_bytes_removed)
+            print(len(unpacked_recv_bytes))
+            print(f"{unpacked_recv_bytes[:10]}...{unpacked_recv_bytes[-10:]}")
+            
             send_data = recv_data.pop(fileno)
             server.send(fileno, send_data)
             end = time.time()
