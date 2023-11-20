@@ -14,7 +14,7 @@ default_length = len(default_bytes)
 
 def recv_threading():
     cpu_count = 8
-    check_length = default_length * 5 * cpu_count * 1000
+    check_length = default_length * 5 * cpu_count * 10000
     print(f"check_length {check_length}")
     count = 0
     start = time.time()
