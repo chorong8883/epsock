@@ -1,15 +1,13 @@
-import platform
-from . import darwin
-from . import linux
-
 class Client:
     def __init__(self):
+        import platform
         system = platform.system()
         if system == "Linux":
             print("Client Linux")
             
         elif system == "Darwin":
             print("Client MacOS")
+            from . import darwin
             self.client = darwin.Client()
             
         elif system == "Windows":
@@ -26,16 +24,23 @@ class Client:
         
     def recv(self):
         return self.client.recv()
+
+    def get_fileno(self) -> int:
+        return self.client.get_fileno()
+    
+    def setblocking(self, is_block:bool):
+        self.client.setblocking(is_block)
             
 class Server:
     def __init__(self):
+        import platform
         system = platform.system()
         if system == "Linux":
-            print("Server Linux")
+            from . import linux
             self.server = linux.Server()
             
         elif system == "Darwin":
-            print("Server MacOS")
+            from . import darwin
             self.server = darwin.Server()
             
         elif system == "Windows":
