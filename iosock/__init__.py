@@ -36,6 +36,7 @@ class Server:
             
         elif system == "Darwin":
             print("Server MacOS")
+            self.server = darwin.Server()
             
         elif system == "Windows":
             print("Server Windows")

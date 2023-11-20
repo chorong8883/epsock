@@ -1,5 +1,6 @@
 import socket
 import traceback
+import queue
 from .. import abstract
 
 class Client(abstract.ClientBase):
@@ -12,25 +13,6 @@ class Client(abstract.ClientBase):
         self.__client_socket.connect((ip, port))
         self.__client_socket.setblocking(False)
         
-        # sre = self.__receive_socket.recv(BUFFER_SIZE)
-        # print("sre", sre)
-        # if sre:
-        #     self.__receive_socket.setblocking(False)
-        # else:
-        #     self.__receive_socket.close()
-        #     self.__receive_socket = None
-        
-        # rre = self.__send_socket.recv(BUFFER_SIZE)
-        # print("rre", rre)
-        # if rre:
-        #     self.__send_socket.setblocking(False)
-        # else:
-        #     self.__send_socket.close()
-        #     self.__send_socket = None
-        
-    # def join(self):
-    #     self.__client_socket.recv(self.__buffer_size)
-            
     def close(self):
         if self.__client_socket:
             self.__client_socket.shutdown(socket.SHUT_RDWR)
@@ -45,4 +27,19 @@ class Client(abstract.ClientBase):
 class Server:
     def __init__(self) -> None:
         print("darwin server")
+        self.__recv_queue = queue.Queue()
+    
+    def start(self, listen_ip:str, listen_port:int, is_blocking:bool = False, backlog:int = 5):
+        pass
+    
+    def stop(self):
+        pass
+    
+    def join(self):
+        pass
         
+    def recv(self):
+        return self.__recv_queue.get()
+    
+    def send(self, fileno:int, data:bytes):
+        pass
