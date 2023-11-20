@@ -21,10 +21,10 @@ class Server(abstract.ServerBase):
         self.__buffer_size = 10240
         self.__is_running = multiprocessing.Value(ctypes.c_bool, False)
         self.client_by_fileno = collections.defaultdict(dict)
-        # self.__command_queue = queue.Queue()
         self.__recv_queue = queue.Queue()
         
-        self.pool = ThreadPool(8)
+        self.__detect_epollin_fileno_queue = queue.Queue()
+        self.__send_work_queue = queue.Queue()
         
     def create_client(self, client_socket):
         return {
@@ -52,8 +52,10 @@ class Server(abstract.ServerBase):
             self.__epoll_thread = threading.Thread(target=self.__epoll_thread_function)
             self.__epoll_thread.start()
             
-            # self.__io_thread = threading.Thread(target=self.__io_thread_function)
-            # self.__io_thread.start()
+            self.__recv_work_thread = threading.Thread(target=self.__recv_work)
+            self.__recv_work_thread.start()
+            self.__send_work_thread = threading.Thread(target=self.__send_work)
+            self.__send_work_thread.start()
             
             self.__stop_epoll_sender, self.__stop_epoll_listener = socket.socketpair()
             
@@ -118,7 +120,7 @@ class Server(abstract.ServerBase):
                     c["socket"].close()
                     
                 elif detect_event & select.EPOLLIN:
-                    self.pool.apply_async(self.__io_recv, args=(detect_fileno,))
+                    self.__detect_epollin_fileno_queue.put_nowait(detect_fileno)
                     
                 else:
                     print("unknown", detect_fileno, detect_event)
@@ -132,31 +134,31 @@ class Server(abstract.ServerBase):
         self.client_by_fileno[fileno]['send_buffer_queue'].put_nowait(data)
         self.pool.apply_async(self.__io_send, args=(fileno,))
         
-    def __io_recv(self, fileno):
-        client = self.client_by_fileno.get(fileno)
-        client_lock:threading.Lock = client['lock']
-        client_lock.acquire()
-        client_socket:socket.socket = client['socket']
+    # def __io_recv(self, fileno):
+    #     client = self.client_by_fileno.get(fileno)
+    #     client_lock:threading.Lock = client['lock']
+    #     client_lock.acquire()
+    #     client_socket:socket.socket = client['socket']
         
-        result = b''
-        try:
-            while True:
-                recv_bytes = client_socket.recv(self.__buffer_size)
-                if recv_bytes:
-                    result += recv_bytes
+    #     result = b''
+    #     try:
+    #         while True:
+    #             recv_bytes = client_socket.recv(self.__buffer_size)
+    #             if recv_bytes:
+    #                 result += recv_bytes
                 
-        except BlockingIOError as e:
-            if e.errno == socket.EAGAIN:
-                pass
-            else:
-                raise e
+    #     except BlockingIOError as e:
+    #         if e.errno == socket.EAGAIN:
+    #             pass
+    #         else:
+    #             raise e
         
-        client_lock.release()
+    #     client_lock.release()
         
-        self.__recv_queue.put({
-            "fileno": fileno,
-            "data": result
-        })
+    #     self.__recv_queue.put({
+    #         "fileno": fileno,
+    #         "data": result
+    #     })
         
     def __io_send(self, fileno):
         client_data = self.client_by_fileno.get(fileno)
@@ -196,9 +198,48 @@ class Server(abstract.ServerBase):
             self.client_by_fileno[client_socket_fileno]['sending_buffer'] = b''
             if not client_data['send_buffer_queue'].empty():
                 self.pool.apply_async(self.__io_send, args=(fileno,))
+                self.pool.star
         
         client_lock.release()
         
+    
+    def __recv_work(self):
+        while self.__is_running.value:
+            detect_fileno = self.__detect_epollin_fileno_queue.get()
+            client = self.client_by_fileno.get(detect_fileno)
+            
+            client_lock:threading.Lock = client['lock']
+            client_lock.acquire()
+            
+            client_socket:socket.socket = client['socket']
+            
+            result = b''
+            try:
+                while True:
+                    recv_bytes = client_socket.recv(self.__buffer_size)
+                    if recv_bytes:
+                        result += recv_bytes
+                    
+            except BlockingIOError as e:
+                if e.errno == socket.EAGAIN:
+                    pass
+                else:
+                    raise e
+            
+            client_lock.release()
+            
+            self.__recv_queue.put_nowait({
+                "fileno": detect_fileno,
+                "data": result
+            })
+            
+            
+    def __send_work(self):
+        while self.__is_running.value:
+            send_work_data = self.__send_work_queue.get()
+            
+        
+    
     # def __io_thread_function(self):
     #     while self.__is_running.value:
     #         command = self.__command_queue.get()

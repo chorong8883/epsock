@@ -14,7 +14,7 @@ default_length = len(default_bytes)
 cpu_count = 8
 pool = ThreadPool(cpu_count)
 
-bytes_count = default_length * 5 * cpu_count * 1000
+bytes_count = default_length * 5 * cpu_count * 10000
 results = []
 
 def get_bytes(count:int):
