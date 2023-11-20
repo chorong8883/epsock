@@ -18,7 +18,6 @@ class Client(abstract.ClientBase):
         
 class Server(abstract.ServerBase):
     def __init__(self) -> None:
-        print("linux server")
         self.__buffer_size = 10240
         self.__is_running = multiprocessing.Value(ctypes.c_bool, False)
         self.client_by_fileno = collections.defaultdict(dict)
@@ -35,17 +34,18 @@ class Server(abstract.ServerBase):
             "sending_buffer" : b''
         }
         
-    def listen(self, listen_ip:str, listen_port:int, is_blocking:bool = False, backlog:int = 5):
-        self.__listen_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.__listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.__listen_socket.setblocking(is_blocking)
-        self.__listen_socket.bind((listen_ip, listen_port))
-        self.__listen_socket.listen(backlog)
+    def get_listener(self, listen_ip:str, listen_port:int, is_blocking:bool = False, backlog:int = 5) -> socket.socket:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.setblocking(is_blocking)
+        s.bind((listen_ip, listen_port))
+        s.listen(backlog)
+        return s 
 
     def start(self, listen_ip:str, listen_port:int, is_blocking:bool = False, backlog:int = 5):
         system = platform.system()
         if system == "Linux":
-            self.listen(listen_ip, listen_port, is_blocking, backlog)
+            self.__listen_socket = self.get_listener(listen_ip, listen_port, is_blocking, backlog)
 
             self.__epoll = select.epoll()
             
@@ -63,11 +63,10 @@ class Server(abstract.ServerBase):
             self.__epoll.register(self.__listen_socket, listener_eventmask)
             
         elif system == "Darwin":
-            print("MacOS")
-            pass
+            print("This system is MacOS. Current process execute for Linux.")
+            
         elif system == "Windows":
-            print("Windows")
-            pass
+            print("This system is Windows. Current process execute for Linux.")
             
     def join(self):
         self.__epoll_thread.join()

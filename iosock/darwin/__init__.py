@@ -1,6 +1,13 @@
 import socket
 import traceback
 import queue
+import errno
+import select
+import multiprocessing
+import ctypes
+import collections
+import threading
+
 from .. import abstract
 
 class Client(abstract.ClientBase):
@@ -15,7 +22,13 @@ class Client(abstract.ClientBase):
         
     def close(self):
         if self.__client_socket:
-            self.__client_socket.shutdown(socket.SHUT_RDWR)
+            try:
+                self.__client_socket.shutdown(socket.SHUT_RDWR)
+            except OSError as e:
+                if e.errno == errno.ENOTCONN:
+                    pass
+                else:
+                    raise e
             self.__client_socket.close()
             
     def send(self, data:bytes):
@@ -23,23 +36,200 @@ class Client(abstract.ClientBase):
         
     def recv(self):
         return self.__client_socket.recv(self.__buffer_size)
+    
+    def get_fileno(self) -> int:
+        return self.__client_socket.fileno()
+    
+    def setblocking(self, is_block:bool):
+        self.__client_socket.setblocking(is_block)
         
 class Server:
     def __init__(self) -> None:
-        print("darwin server")
+        self.__buffer_size = 10240
+        self.__is_running = multiprocessing.Value(ctypes.c_bool, False)
+        self.client_by_fileno = collections.defaultdict(dict)
+        self.__kevent_by_fileno = collections.defaultdict(select.kevent)
         self.__recv_queue = queue.Queue()
+        
+        self.__detect_epollin_fileno_queue = queue.Queue()
+        self.__send_fileno_queue = queue.Queue()
     
     def start(self, listen_ip:str, listen_port:int, is_blocking:bool = False, backlog:int = 5):
-        pass
-    
-    def stop(self):
-        pass
-    
-    def join(self):
-        pass
+        self.__listen_socket = self.get_listener(listen_ip, listen_port, is_blocking, backlog)
+
+        self.__is_running.value = True
         
+        self.__kq_thread = threading.Thread(target=self.__kq_thread_function)
+        self.__recv_work_thread = threading.Thread(target=self.__recv_work)
+        self.__send_work_thread = threading.Thread(target=self.__send_work)
+        
+        self.__kq_thread.start()
+        self.__recv_work_thread.start()
+        self.__send_work_thread.start()
+        
+        listen_socket_fileno = self.__listen_socket.fileno()
+        kevent = select.kevent(listen_socket_fileno)
+        self.__kevent_by_fileno[listen_socket_fileno] = kevent
+        
+    def stop(self):
+        self.__is_running.value = False
+        self.__listen_socket.shutdown(socket.SHUT_RDWR)
+        
+    def join(self):
+        self.__kq_thread.join()
+        self.__recv_work_thread.join()
+        self.__send_work_thread.join()
+    
+    def create_client(self, client_socket):
+        return {
+            "socket" : client_socket,
+            "lock" : threading.Lock(),
+            "send_buffer_queue" : queue.Queue(),
+            "sending_buffer" : b''
+        }
+    
     def recv(self):
         return self.__recv_queue.get()
     
+    def __recv_work(self):
+        while self.__is_running.value:
+            detect_fileno = self.__detect_epollin_fileno_queue.get()
+            if not detect_fileno:
+                self.__recv_queue.put_nowait(None)
+                break
+            
+            client = self.client_by_fileno.get(detect_fileno)
+            client_lock:threading.Lock = client['lock']
+            client_lock.acquire()
+            
+            client_socket:socket.socket = client['socket']
+            
+            result = b''
+            try:
+                while True:
+                    recv_bytes = client_socket.recv(self.__buffer_size)
+                    if recv_bytes:
+                        result += recv_bytes
+                    
+            except BlockingIOError as e:
+                if e.errno == socket.EAGAIN:
+                    pass
+                else:
+                    raise e
+            
+            client_lock.release()
+            
+            self.__recv_queue.put_nowait({
+                "fileno": detect_fileno,
+                "data": result
+            })
+
+#####################################################################################################################
+#####################################################################################################################
+#####################################################################################################################
     def send(self, fileno:int, data:bytes):
-        pass
+        self.client_by_fileno[fileno]['send_buffer_queue'].put_nowait(data)
+        self.__send_fileno_queue.put_nowait(fileno)
+    
+    def __send_work(self):
+        while self.__is_running.value:
+            send_fileno = self.__send_fileno_queue.get()
+            if not send_fileno:
+                break
+        
+            client_data = self.client_by_fileno.get(send_fileno)
+            client_lock:threading.Lock = client_data['lock']
+            client_lock.acquire()
+            
+            sending_data = b''
+            if client_data['sending_buffer'] == b'':
+                try:
+                    client_data['sending_buffer'] = client_data['send_buffer_queue'].get_nowait()
+                    sending_data = client_data['sending_buffer']
+                except queue.Empty:
+                    return
+            else:
+                sending_data = client_data['sending_buffer']
+            
+            start_index = 0
+            end_index = len(sending_data)
+            try:
+                while start_index < end_index:
+                    send_length = client_data['socket'].send(sending_data[start_index:end_index])
+                    if send_length <= 0:
+                        break
+                    start_index += send_length
+            except BlockingIOError as e:
+                if e.errno == socket.EAGAIN:
+                    pass
+                else:
+                    raise e
+                
+            if start_index < end_index:
+                self.client_by_fileno[send_fileno]['sending_buffer'] = self.client_by_fileno[send_fileno]['sending_buffer'][start_index:end_index]
+                self.__send_fileno_queue.put_nowait(send_fileno)
+            else:
+                self.client_by_fileno[send_fileno]['sending_buffer'] = b''
+                if not client_data['send_buffer_queue'].empty():
+                    self.__send_fileno_queue.put_nowait(send_fileno)
+                    
+            client_lock.release()
+            
+#####################################################################################################################
+#####################################################################################################################
+#####################################################################################################################            
+            
+    
+    def get_listener(self, listen_ip:str, listen_port:int, is_blocking:bool = False, backlog:int = 5) -> socket.socket:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.setblocking(is_blocking)
+        s.bind((listen_ip, listen_port))
+        s.listen(backlog)
+        return s 
+
+    def __kq_thread_function(self):
+        kq = select.kqueue()
+        while self.__is_running.value:
+            kevents = self.__kevent_by_fileno.values()
+            events = kq.control(list(kevents), 1000)
+            for event in events:
+                if event.flags & select.KQ_EV_ERROR:
+                    print("event.flags & select.KQ_EV_ERROR")
+                    return
+                    
+                if event.ident == self.__listen_socket.fileno():
+                    if event.flags & select.KQ_EV_EOF:
+                        print(f"event.ident == detect_close_fd.fileno() {event}")
+                        self.__is_running.value = False
+                        continue
+                    else:
+                        client_socket, address = self.__listen_socket.accept()
+                        client_socket_fileno = client_socket.fileno()
+                        print(f"accept {client_socket_fileno} {address}")
+                        client_socket.setblocking(False)
+                        client = self.client_by_fileno.get(client_socket_fileno)
+                        if client:
+                            s:socket.socket = client["socket"]
+                            print(s)
+                            s.shutdown(socket.SHUT_RDWR)
+                        client_data = self.create_client(client_socket)
+                        self.client_by_fileno.update({client_socket_fileno : client_data})
+                        
+                        kevent = select.kevent(client_socket_fileno)
+                        self.__kevent_by_fileno.update({client_socket_fileno:kevent})
+                        
+                elif event.filter == select.KQ_FILTER_READ:
+                    if event.flags & select.KQ_EV_EOF:
+                        print("event.flags & select.KQ_EV_EOF")
+                        self.__kevent_by_fileno.pop(event.ident)
+                        client_data = self.client_by_fileno.pop(event.ident)
+                        client_data['socket'].shutdown(socket.SHUT_RDWR)
+                        client_data['socket'].close()
+                
+                    else:
+                        client_data = self.client_by_fileno.pop(event.ident)
+                        data = client_data['socket'].recv()
+                        print(data)
+                
+        kq.close()

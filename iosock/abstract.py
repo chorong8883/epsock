@@ -14,6 +14,12 @@ class ClientBase(metaclass=abc.ABCMeta):
     @abstractmethod
     def recv(self) -> bytes: pass
     
+    @abstractmethod
+    def get_fileno(self) -> int: pass
+    
+    @abstractmethod
+    def setblocking(self, is_block:bool): pass
+    
 class ServerBase(metaclass=abc.ABCMeta):
     @abstractmethod
     def start(self): pass
