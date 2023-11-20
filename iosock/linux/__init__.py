@@ -27,7 +27,7 @@ class Server(abstract.ServerBase):
         self.__detect_epollin_fileno_queue = queue.Queue()
         self.__send_fileno_queue = queue.Queue()
         
-    def create_client(self, client_socket):
+    def create_client(self, client_socket) -> dict:
         return {
             "socket" : client_socket,
             "lock" : threading.Lock(),
@@ -83,33 +83,34 @@ class Server(abstract.ServerBase):
         lock:threading.Lock = client_data["lock"]
         lock.acquire()
         client_socket:socket.socket = client_data["socket"]
-        client_socket.setblocking(True)
-        client_socket.settimeout(3)
-        
         try:
-            while True:
-                if client_data['sending_buffer'] == b'':
-                    client_data['sending_buffer'] = client_data['send_buffer_queue'].get_nowait()
-                
-                start_index = 0
-                end_index = len(client_data['sending_buffer'])
-                while start_index < end_index:
-                    send_length = client_socket.send(client_data['sending_buffer'][start_index:end_index])
-                    if send_length <= 0:
-                        break
-                    start_index += send_length
-                client_data['sending_buffer'] = b''
-        except queue.Empty:
-            pass
+            client_socket.setblocking(True)
+            client_socket.settimeout(3)
             
-        try:
-            client_data["socket"].shutdown(socket.SHUT_RDWR)
+            try:
+                while True:
+                    if client_data['sending_buffer'] == b'':
+                        client_data['sending_buffer'] = client_data['send_buffer_queue'].get_nowait()
+                    
+                    start_index = 0
+                    end_index = len(client_data['sending_buffer'])
+                    while start_index < end_index:
+                        send_length = client_socket.send(client_data['sending_buffer'][start_index:end_index])
+                        if send_length <= 0:
+                            break
+                        start_index += send_length
+                    client_data['sending_buffer'] = b''
+            except queue.Empty:
+                pass
+            
+            client_socket.shutdown(socket.SHUT_RDWR)
         except OSError as e:
             if e.errno == errno.ENOTCONN: # errno 107
                 pass
             else:
                 raise e
-        client_data["socket"].close()
+        client_socket.close()
+        
         lock.release()
 
 #####################################################################################################################
@@ -220,12 +221,19 @@ class Server(abstract.ServerBase):
                         client_socket, address = self.__listen_socket.accept()
                         print(f"accept {client_socket.fileno()} {address}")
                         client_socket.setblocking(False)
-                        client = self.client_by_fileno.get(client_socket.fileno())
-                        if client:
-                            s:socket.socket = client["socket"]
-                            print(s)
-                            s.shutdown(socket.SHUT_RDWR)
-                        self.client_by_fileno.update({client_socket.fileno() : self.create_client(client_socket)})
+                        client_socket_fileno = client_socket.fileno()
+                        exist_client = self.client_by_fileno.get(client_socket_fileno)
+                        if exist_client:
+                            exist_socket:socket.socket = exist_client["socket"]
+                            try:
+                                exist_socket.shutdown(socket.SHUT_RDWR)
+                            except OSError as e:
+                                if e.errno == errno.ENOTCONN: # errno 107
+                                    pass
+                                else:
+                                    raise e
+                        client_data = self.create_client(client_socket)
+                        self.client_by_fileno.update({client_socket_fileno : client_data})
                         
                         client_eventmask = select.EPOLLIN | select.EPOLLHUP | select.EPOLLRDHUP | select.EPOLLET
                         self.__epoll.register(client_socket, client_eventmask)
@@ -234,15 +242,15 @@ class Server(abstract.ServerBase):
                         print("accept", detect_fileno, detect_event)
 
                 elif detect_event & (select.EPOLLHUP | select.EPOLLRDHUP):
-                    c = self.client_by_fileno.pop(detect_fileno)
                     self.__epoll.unregister(detect_fileno)
-                    c["socket"].close()
+                    self.close_client(detect_fileno)
                     
                 elif detect_event & select.EPOLLIN:
                     self.__detect_epollin_fileno_queue.put_nowait(detect_fileno)
                     
                 else:
                     print("unknown", detect_fileno, detect_event)
+                    
         self.__epoll.close()
         self.__detect_epollin_fileno_queue.put_nowait(None)
         self.__send_fileno_queue.put_nowait(None)

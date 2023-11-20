@@ -3,23 +3,38 @@ import signal
 import threading
 import time
 import math
+
 server = iosock.Server()
+
+def unpacking(source_bytes: bytes, byteorder: str = 'little') -> bytes:
+    bit8_length = 1
+    length_of_length = int.from_bytes(source_bytes[:bit8_length], byteorder=byteorder)
+    source_length = int.from_bytes(source_bytes[bit8_length:(bit8_length+length_of_length)], byteorder=byteorder)
+    start_index = bit8_length+length_of_length
+    end_index = bit8_length+length_of_length+source_length
+    if len(source_bytes) == end_index:
+        return source_bytes[start_index:end_index]
+    else:
+        return None
+
+starter = b'%w$d#'
+closer = b'&sa@f#d$'
+
+# packed_recv_bytes_removed = recv_bytes.removeprefix(starter)
+# packed_recv_bytes_removed = recv_bytes.removesuffix(closer)
+# unpacked_recv_bytes = unpacking(packed_recv_bytes_removed)
+# print(unpacked_recv_bytes)
 
 def signal_handler(num_recv_signal, frame):
     print(f"\nGet Signal: {signal.Signals(num_recv_signal).name}")
     server.stop()
 
-default_bytes = b'abcdefghijklamopqrst'
-default_length = len(default_bytes)
 
 def recv_threading():
-    cpu_count = 8
-    check_length = default_length * 5 * cpu_count * 100
-    print(f"check_length {check_length}")
-    count = 0
-    start = time.time()
+    
     
     recv_data = {}
+    time_recv_data = {}
     while True:
         recv_temp_data = server.recv()
         if not recv_temp_data:
@@ -28,22 +43,21 @@ def recv_threading():
         data = recv_temp_data['data']
         
         if fileno in recv_data:
+            if recv_data[fileno] == b'':
+                time_recv_data[fileno] = time.time()
             recv_data[fileno] += data
         else:
             recv_data[fileno] = data
-        
-        if check_length == len(recv_data[fileno]):
-            print(f"recv {count:2}, total: {len(recv_data[fileno]):7,}")
+            time_recv_data[fileno] = time.time()
+            
+        if -1<recv_data[fileno].find(starter) and -1<recv_data[fileno].find(closer):
+            print(f"recv total: {len(recv_data[fileno]):7,}")
             send_data = recv_data.pop(fileno)
             server.send(fileno, send_data)
-        # elif (check_length/10)*8 < len(recv_data[fileno]):
-        #     print(f"recv [{fileno}] {count:2}, total: {len(recv_data[fileno]):7,}")
-        
-        count += 1
-    end = time.time()
-    print(f'time elapsed: {end - start}')
+            end = time.time()
+            print(f'[{fileno}] time elapsed: {end - time_recv_data[fileno]}')
+            recv_data[fileno] = b''
     
-
 if __name__ == '__main__':
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGABRT, signal_handler)
