@@ -10,6 +10,7 @@ import select
 
 client_num = 10
 send_count = 10
+data_sum_count = 15
 
 def packing(source_bytes: bytes, starter: bytes = b'', closer: bytes = b'', byteorder:str = 'little') -> bytes:
     bit8_length = 1
@@ -51,10 +52,12 @@ def unpacking(source_bytes: bytes, byteorder: str = 'little') -> bytes:
     else:
         return None
 
-send_bytes = b'abcdefghijklmnopqrst'
-for _ in range(15):
+send_bytes = b'abcdefghijklmnop'
+for _ in range(data_sum_count):
     send_bytes += send_bytes
     
+print(f"data length:{len(send_bytes)}")
+
 starter = b'%w$d#'
 closer = b'&sa@f#d$'
 packed_send_bytes = packing(send_bytes, starter, closer)
