@@ -55,13 +55,20 @@ def unpacking(source_bytes: bytes, byteorder: str = 'little') -> bytes:
 send_bytes = b'abcdefghijklmnop'
 for _ in range(data_sum_count):
     send_bytes += send_bytes
+send_bytes2 = b'abcdefghijklmnop'
+for _ in range(int(data_sum_count/2)):
+    send_bytes2 += send_bytes2
     
-print(f"data length:{len(send_bytes)}")
+print(f"data length:{len(send_bytes)} send_bytes2:{len(send_bytes2)}")
 
 starter = b'%w$d#'
 closer = b'&sa@f#d$'
 packed_send_bytes = packing(send_bytes, starter, closer)
 packed_send_bytes_length = len(packed_send_bytes)
+
+packed_send_bytes2 = packing(send_bytes2, starter, closer)
+packed_send_bytes_length2 = len(packed_send_bytes2)
+
 
 kevents = collections.defaultdict(select.kevent)
 clients = collections.defaultdict(iosock.Client)
@@ -93,7 +100,9 @@ def sending():
                 break
             with locks[client_fileno]:
                 client.sendall(packed_send_bytes)
+                client.sendall(packed_send_bytes2)
             print(f"[{send_count_index}] send [{client_fileno}] {len(packed_send_bytes):,} bytes")
+            print(f"[{send_count_index}] send [{client_fileno}] {len(packed_send_bytes2):,} bytes")
         
     print("finish send")
 
