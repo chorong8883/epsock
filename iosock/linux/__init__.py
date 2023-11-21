@@ -97,35 +97,38 @@ class Server(abstract.ServerBase):
         client_data = self.client_by_fileno.pop(client_fileno)
         print(f'[{client_fileno}] Try Close ')
         
+        while not client_data['send_buffer_queue'].empty():
+            _ = client_data['send_buffer_queue'].get_nowait()
+        
         try:
-            with client_data["lock"]:
-                client_data["socket"].setblocking(True)
-            with client_data["lock"]:
-                client_data["socket"].settimeout(1)
-            print(f'[{client_fileno}] client_socket settimeout')
-            try:
-                while True:
-                    if client_data['sending_buffer'] == b'':
-                        print(f"[{client_fileno}] {len(client_data['send_buffer_queue'].queue)}")
-                        client_data['sending_buffer'] = client_data['send_buffer_queue'].get_nowait()
+        #     with client_data["lock"]:
+        #         client_data["socket"].setblocking(True)
+        #     with client_data["lock"]:
+        #         client_data["socket"].settimeout(1)
+        #     print(f'[{client_fileno}] client_socket settimeout')
+        #     try:
+        #         while True:
+        #             if client_data['sending_buffer'] == b'':
+        #                 print(f"[{client_fileno}] {len(client_data['send_buffer_queue'].queue)}")
+        #                 client_data['sending_buffer'] = client_data['send_buffer_queue'].get_nowait()
                     
-                    start_index = 0
-                    end_index = len(client_data['sending_buffer'])
-                    while start_index < end_index:
-                        with client_data["lock"]:
-                            send_length = client_data["socket"].send(client_data['sending_buffer'][start_index:end_index])
-                            if send_length <= 0:
-                                break
-                            start_index += send_length
-                    client_data['sending_buffer'] = b''
-            except queue.Empty:
-                print(f"[{client_fileno}] queue.Empty")
-            print(f'[{client_fileno}] before client_socket.shutdown')
+        #             start_index = 0
+        #             end_index = len(client_data['sending_buffer'])
+        #             while start_index < end_index:
+        #                 with client_data["lock"]:
+        #                     send_length = client_data["socket"].send(client_data['sending_buffer'][start_index:end_index])
+        #                     if send_length <= 0:
+        #                         break
+        #                     start_index += send_length
+        #             client_data['sending_buffer'] = b''
+        #     except queue.Empty:
+        #         print(f"[{client_fileno}] queue.Empty")
+        #     print(f'[{client_fileno}] before client_socket.shutdown')
             with client_data["lock"]:
                 client_data["socket"].shutdown(socket.SHUT_RDWR)
-        except TimeoutError:
-            print(f"[{client_fileno}] TimeoutError")
-            pass
+        # except TimeoutError:
+        #     print(f"[{client_fileno}] TimeoutError")
+        #     pass
         except ConnectionResetError:
             pass
         except BrokenPipeError:
@@ -139,6 +142,7 @@ class Server(abstract.ServerBase):
                 raise e
         except Exception as e:
             print(e, traceback.format_exc())
+        
         with client_data["lock"]:
             client_data["socket"].close()
         
@@ -155,7 +159,6 @@ class Server(abstract.ServerBase):
         while self.__is_running.value:
             detect_fileno = self.__detect_epollin_fileno_queue.get()
             if not detect_fileno:
-                self.__recv_queue.put_nowait(None)
                 break
             
             client_data = self.client_by_fileno.get(detect_fileno)
@@ -180,6 +183,8 @@ class Server(abstract.ServerBase):
                     "fileno": detect_fileno,
                     "data": result
                 })
+                
+        self.__recv_queue.put_nowait(None)
         print("Finish Recver")
 #####################################################################################################################
 #####################################################################################################################
@@ -229,7 +234,6 @@ class Server(abstract.ServerBase):
                 
                 if self.client_by_fileno[send_fileno]['sending_buffer'] != b'':
                     self.__send_fileno_queue.put_nowait(send_fileno)
-                    
                 elif not self.client_by_fileno[send_fileno]['send_buffer_queue'].empty():
                     self.__send_fileno_queue.put_nowait(send_fileno)
     
@@ -281,38 +285,6 @@ class Server(abstract.ServerBase):
                     self.close_client(detect_fileno)
                     
                 elif detect_event & select.EPOLLIN:
-                    # client_data = self.client_by_fileno.get(detect_fileno)
-                    # recv_data = b''
-                    
-                    # try:
-                    #     while True:
-                    #         with client_data['lock']:
-                    #             recv_bytes = client_data['socket'].recv(self.__buffer_size)
-                    #             if recv_bytes:
-                    #                 recv_data += recv_bytes
-                    #             else:
-                    #                 break
-                    # except ConnectionResetError:
-                    #     self.__epoll.unregister(detect_fileno)
-                    #     self.close_client(detect_fileno)
-                    # except BlockingIOError as e:
-                    #     if e.errno == socket.EAGAIN:
-                    #         pass
-                    #     else:
-                    #         raise e
-                    
-                    # self.__recv_queue.put_nowait({
-                    #     "fileno": detect_fileno,
-                    #     "data": recv_data
-                    # })
-                    # if detect_fileno in self.temp_recv_data:
-                    #     self.temp_recv_data[detect_fileno] += recv_data
-                    # else:
-                    #     self.temp_recv_data[detect_fileno] = recv_data
-                    
-                    # for key in self.temp_recv_data:
-                    #     print(f"[{threading.get_ident()}] [{key}] recv {len(self.temp_recv_data[key])} bytes")
-                        
                     self.__detect_epollin_fileno_queue.put_nowait(detect_fileno)
                     
                 else:
