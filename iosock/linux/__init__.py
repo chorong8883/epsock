@@ -96,9 +96,9 @@ class Server(abstract.ServerBase):
     def close_client(self, client_fileno:int):
         client_data = self.client_by_fileno.pop(client_fileno)
         print(f'[{client_fileno}] Try Close ')
-        
-        while not client_data['send_buffer_queue'].empty():
-            _ = client_data['send_buffer_queue'].get_nowait()
+        with client_data["lock"]:
+            while not client_data['send_buffer_queue'].empty():
+                _ = client_data['send_buffer_queue'].get_nowait()
         
         try:
         #     with client_data["lock"]:
@@ -201,8 +201,8 @@ class Server(abstract.ServerBase):
                 break
         
             if self.client_by_fileno[send_fileno]:
-                if self.client_by_fileno[send_fileno]['sending_buffer'] == b'':
-                    with self.client_by_fileno[send_fileno]['lock']:
+                with self.client_by_fileno[send_fileno]['lock']:
+                    if self.client_by_fileno[send_fileno]['sending_buffer'] == b'':
                         try:
                             self.client_by_fileno[send_fileno]['sending_buffer'] = self.client_by_fileno[send_fileno]['send_buffer_queue'].get_nowait()
                         except queue.Empty:
@@ -223,7 +223,7 @@ class Server(abstract.ServerBase):
                     else:
                         raise e
                 except BrokenPipeError:
-                    print(f"[{self.client_by_fileno[send_fileno]['socket'].fileno()}] BrokenPipeError cur:{send_fileno}")
+                    # print(f"[{self.client_by_fileno[send_fileno]['socket'].fileno()}] BrokenPipeError cur:{send_fileno}")
                     pass
                     
                 with self.client_by_fileno[send_fileno]['lock']:
