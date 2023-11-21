@@ -13,6 +13,16 @@ from multiprocessing.pool import ThreadPool
 
 from .. import abstract
 
+from contextlib import contextmanager
+
+@contextmanager
+def acquire_timeout(lock:threading.Lock, timeout:float):
+    result = lock.acquire(timeout=timeout)
+    try:
+        yield result
+    finally:
+        lock.release()
+
 class Client(abstract.ClientBase):
     def __init__(self) -> None:
         print("linux client")
@@ -166,12 +176,15 @@ class Server(abstract.ServerBase):
                 result = b''
                 try:
                     while True:
-                        with client_data['lock']:
-                            recv_bytes = client_data['socket'].recv(self.__buffer_size)
-                            if recv_bytes:
-                                result += recv_bytes
+                        with acquire_timeout(client_data['lock'], 1) as acqiured:
+                            if acqiured:
+                                recv_bytes = client_data['socket'].recv(self.__buffer_size)
+                                if recv_bytes:
+                                    result += recv_bytes
+                                else:
+                                    break
                             else:
-                                break
+                                print("recv work timedout")
                         
                 except BlockingIOError as e:
                     if e.errno == socket.EAGAIN:
@@ -201,22 +214,29 @@ class Server(abstract.ServerBase):
                 break
         
             if self.client_by_fileno[send_fileno]:
-                with self.client_by_fileno[send_fileno]['lock']:
-                    if self.client_by_fileno[send_fileno]['sending_buffer'] == b'':
-                        try:
-                            self.client_by_fileno[send_fileno]['sending_buffer'] = self.client_by_fileno[send_fileno]['send_buffer_queue'].get_nowait()
-                        except queue.Empty:
-                            continue
+                with acquire_timeout(self.client_by_fileno[send_fileno]['lock'], 1) as acqiured:
+                    if acqiured:
+                        if self.client_by_fileno[send_fileno]['sending_buffer'] == b'':
+                            try:
+                                self.client_by_fileno[send_fileno]['sending_buffer'] = self.client_by_fileno[send_fileno]['send_buffer_queue'].get_nowait()
+                            except queue.Empty:
+                                continue
+                    else:
+                        print("send work timedout buffering")
                 
                 start_index = 0
                 end_index = len(self.client_by_fileno[send_fileno]['sending_buffer'])
                 try:
                     while start_index < end_index:
-                        with self.client_by_fileno[send_fileno]['lock']:
-                            send_length = self.client_by_fileno[send_fileno]['socket'].send(self.client_by_fileno[send_fileno]['sending_buffer'][start_index:end_index])
-                            if send_length <= 0:
-                                break
-                            start_index += send_length
+                        with acquire_timeout(self.client_by_fileno[send_fileno]['lock'], 1) as acqiured:
+                            if acqiured:
+                                send_length = self.client_by_fileno[send_fileno]['socket'].send(self.client_by_fileno[send_fileno]['sending_buffer'][start_index:end_index])
+                                if send_length <= 0:
+                                    break
+                                start_index += send_length
+                            else:
+                                print("send work timedout")
+                        
                 except BlockingIOError as e:
                     if e.errno == socket.EAGAIN:
                         pass
