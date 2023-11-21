@@ -12,13 +12,13 @@ from .. import abstract
 
 class Client(abstract.ClientBase):
     def __init__(self) -> None:
-        print("darwin client")
         self.__buffer_size = 10240
+        self.__client_socket : socket.socket = None
         
     def connect(self, ip:str, port:int):
         self.__client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.__client_socket.connect((ip, port))
-        self.__client_socket.setblocking(False)
+        # self.__client_socket.setblocking(False)
         
     def close(self):
         if self.__client_socket:
@@ -31,11 +31,46 @@ class Client(abstract.ClientBase):
                     raise e
             self.__client_socket.close()
             
-    def send(self, data:bytes):
-        return self.__client_socket.send(data)
+    def sendall(self, data:bytes):
+        self.__client_socket.sendall(data)
+    
+    def send(self, data:bytes) -> int:
+        return self.__client_socket.sendall(data)
+        # non blocking
+        # start_index = 0
+        # end_index = len(data)
+        # try:
+        #     while start_index < end_index:
+        #         if start_index != 0:
+        #             print(f"{start_index}:{end_index}")
+        #         len_send = self.__client_socket.send(data[start_index:end_index])
+        #         if len_send <= 0:
+        #             break
+        #         start_index += len_send
+        # except BlockingIOError as e:
+        #     if e.errno == socket.EAGAIN:
+        #         pass
+        #     else:
+        #         raise e
+        # return start_index
         
     def recv(self):
         return self.__client_socket.recv(self.__buffer_size)
+        # non blocking
+        # recv_data = b''
+        # try:
+        #     while True:
+        #         temp_recv_data = self.__client_socket.recv(self.__buffer_size)
+        #         if temp_recv_data:
+        #             recv_data += temp_recv_data
+        #         else:
+        #             break
+        # except BlockingIOError as e:
+        #     if e.errno == socket.EAGAIN:
+        #         pass
+        #     else:
+        #         raise e
+        # return recv_data
     
     def get_fileno(self) -> int:
         return self.__client_socket.fileno()
@@ -99,25 +134,20 @@ class Server:
                 break
             
             client = self.client_by_fileno.get(detect_fileno)
-            client_lock:threading.Lock = client['lock']
-            client_lock.acquire()
-            
-            client_socket:socket.socket = client['socket']
             
             result = b''
             try:
                 while True:
-                    recv_bytes = client_socket.recv(self.__buffer_size)
-                    if recv_bytes:
-                        result += recv_bytes
+                    with client['lock']:
+                        recv_bytes = client['socket'].recv(self.__buffer_size)
+                        if recv_bytes:
+                            result += recv_bytes
                     
             except BlockingIOError as e:
                 if e.errno == socket.EAGAIN:
                     pass
                 else:
                     raise e
-            
-            client_lock.release()
             
             self.__recv_queue.put_nowait({
                 "fileno": detect_fileno,
@@ -138,14 +168,13 @@ class Server:
                 break
         
             client_data = self.client_by_fileno.get(send_fileno)
-            client_lock:threading.Lock = client_data['lock']
-            client_lock.acquire()
             
             sending_data = b''
             if client_data['sending_buffer'] == b'':
                 try:
-                    client_data['sending_buffer'] = client_data['send_buffer_queue'].get_nowait()
-                    sending_data = client_data['sending_buffer']
+                    with client_data['lock']:
+                        client_data['sending_buffer'] = client_data['send_buffer_queue'].get_nowait()
+                        sending_data = client_data['sending_buffer']
                 except queue.Empty:
                     return
             else:
@@ -155,26 +184,26 @@ class Server:
             end_index = len(sending_data)
             try:
                 while start_index < end_index:
-                    send_length = client_data['socket'].send(sending_data[start_index:end_index])
-                    if send_length <= 0:
-                        break
-                    start_index += send_length
+                    with client_data['lock']:
+                        send_length = client_data['socket'].send(sending_data[start_index:end_index])
+                        if send_length <= 0:
+                            break
+                        start_index += send_length
             except BlockingIOError as e:
                 if e.errno == socket.EAGAIN:
                     pass
                 else:
                     raise e
                 
-            if start_index < end_index:
-                self.client_by_fileno[send_fileno]['sending_buffer'] = self.client_by_fileno[send_fileno]['sending_buffer'][start_index:end_index]
-                self.__send_fileno_queue.put_nowait(send_fileno)
-            else:
-                self.client_by_fileno[send_fileno]['sending_buffer'] = b''
-                if not client_data['send_buffer_queue'].empty():
+            with client_data['lock']:
+                if start_index < end_index:
+                    self.client_by_fileno[send_fileno]['sending_buffer'] = self.client_by_fileno[send_fileno]['sending_buffer'][start_index:end_index]
                     self.__send_fileno_queue.put_nowait(send_fileno)
-                    
-            client_lock.release()
-            
+                else:
+                    self.client_by_fileno[send_fileno]['sending_buffer'] = b''
+                    if not client_data['send_buffer_queue'].empty():
+                        self.__send_fileno_queue.put_nowait(send_fileno)
+                
 #####################################################################################################################
 #####################################################################################################################
 #####################################################################################################################            

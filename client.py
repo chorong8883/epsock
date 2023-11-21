@@ -8,8 +8,8 @@ import traceback
 import collections
 import select
 
-client_num = 1
-send_count = 1
+client_num = 10
+send_count = 10
 
 def packing(source_bytes: bytes, starter: bytes = b'', closer: bytes = b'', byteorder:str = 'little') -> bytes:
     bit8_length = 1
@@ -51,7 +51,7 @@ def unpacking(source_bytes: bytes, byteorder: str = 'little') -> bytes:
     else:
         return None
 
-send_bytes = b'abcdefghijklamopqrst'
+send_bytes = b'abcdefghijklmnopqrst'
 for _ in range(15):
     send_bytes += send_bytes
     
@@ -63,21 +63,43 @@ packed_send_bytes_length = len(packed_send_bytes)
 kevents = collections.defaultdict(select.kevent)
 clients = collections.defaultdict(iosock.Client)
 recv_data = collections.defaultdict(iosock.Client)
-
+locks = collections.defaultdict(threading.Lock)
 import multiprocessing
 import ctypes
 is_running = multiprocessing.Value(ctypes.c_bool, True)
 
+update_fd, detect_update_fd = socket.socketpair()
 closer_fd, detect_close_fd = socket.socketpair()
-        
+
 def sending():
+    for _ in range(client_num):
+        if not is_running.value:
+            break
+        client = iosock.Client()
+        client.connect('218.55.118.203', 59012)
+        client_fileno = client.get_fileno()
+        print(f"connect [{client_fileno}]")
+        locks[client_fileno] = threading.Lock()
+        clients[client_fileno] = client
+        kevent = select.kevent(client_fileno)
+        kevents[client_fileno] = kevent
+        update_fd.send(b'update')
+        
+        for send_count_index in range(send_count):
+            if not is_running.value:
+                break
+            with locks[client_fileno]:
+                client.sendall(packed_send_bytes)
+            print(f"[{send_count_index}] send [{client_fileno}] {len(packed_send_bytes):,} bytes")
+        
+    print("finish send")
+
+def recving():
     kq = select.kqueue()
     try:
-        sum_length = 0
         while is_running.value:
             revents = kq.control(list(kevents.values()), 1000)
             for event in revents:
-                print(f"{event.ident} filter:{event.filter:#06x} flags:{event.flags:#06x} KQ_FILTER_READ:{select.KQ_FILTER_READ:#06x} KQ_EV_EOF:{select.KQ_EV_EOF:#06x}[{event.flags & select.KQ_EV_EOF:#06x}] KQ_EV_ENABLE:{select.KQ_EV_ENABLE:#06x} KQ_EV_ERROR:{select.KQ_EV_ERROR:#06x}[{event.flags & select.KQ_EV_ERROR:#06x}] KQ_EV_ADD:{select.KQ_EV_ADD:#06x}, KQ_EV_DELETE:{select.KQ_EV_DELETE:#06x}, KQ_EV_ONESHOT:{select.KQ_EV_ONESHOT:#06x}")
                 if event.flags & select.KQ_EV_ERROR:
                     print("event.flags & select.KQ_EV_ERROR")
                     kevents.pop(event.ident)
@@ -87,35 +109,49 @@ def sending():
                     print(f"event.ident == detect_close_fd.fileno() {event}")
                     is_running.value = False
                     continue
+                
+                elif event.ident == detect_update_fd.fileno():
+                    continue
                     
                 elif event.filter == select.KQ_FILTER_READ:
                     if event.flags & select.KQ_EV_EOF:
-                        print("event.flags & select.KQ_EV_EOF")
+                        print(f"[{event.ident}]event.flags & select.KQ_EV_EOF")
                         kevents.pop(event.ident)
                         client : iosock.Client = clients.pop(event.ident)
                         client.close()
                 
                     else:
                         client : iosock.Client = clients[event.ident]
-                        data = client.recv()
+                        data = b''
+                        with locks[event.ident]:
+                            data = client.recv()
                         if event.ident in recv_data:
                             recv_data[event.ident] += data
                         else:
                             recv_data[event.ident] = data
-                            
+                        
                         if -1<recv_data[event.ident].find(starter) and -1<recv_data[event.ident].find(closer):
-                            packed_recv_bytes_removed = recv_data[event.ident].removeprefix(starter)
+                            start_index = recv_data[event.ident].find(starter)
+                            end_index = recv_data[event.ident].find(closer)+len(closer)
+                            
+                            data = recv_data[event.ident][start_index:end_index]
+                            # print(f"1 recv total: {data[:5]}...({len(data)})/{len(recv_data[event.ident]):7,}")
+                            
+                            recv_data[event.ident] = recv_data[event.ident][end_index:]
+                            # print(f"2 recv total: {data[:5]}...({len(data)})/{len(recv_data[event.ident]):7,}")
+                            
+                            packed_recv_bytes_removed = data.removeprefix(starter)
                             packed_recv_bytes_removed = packed_recv_bytes_removed.removesuffix(closer)
                             unpacked_recv_bytes = unpacking(packed_recv_bytes_removed)
-                            print(len(unpacked_recv_bytes))
-                            print(f"{unpacked_recv_bytes[:10]}...{unpacked_recv_bytes[-10:]}")
-                            
+                            print(f"[{event.ident}] {len(unpacked_recv_bytes)} {unpacked_recv_bytes[:10]}...{unpacked_recv_bytes[-10:]}")
+                        
                 else:
                     print('else', event)
         
     except Exception as e:
-        print(f"worker exception: {e}\n{traceback.format_exc()}")
+        print(f"recver exception: {e}\n{traceback.format_exc()}")
     kq.close()
+    print("finish recv")
 
 def signal_handler(num_recv_signal, frame):
     print(f"Get Signal: {signal.Signals(num_recv_signal).name}")
@@ -131,24 +167,19 @@ if __name__ == '__main__':
         signal.signal(signal.SIGABRT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
         
-        kevent = select.kevent(detect_close_fd)
-        kevents[detect_close_fd] = kevent
+        kevent_close = select.kevent(detect_close_fd)
+        kevents[detect_close_fd] = kevent_close
+        kevent_update = select.kevent(detect_update_fd)
+        kevents[detect_update_fd] = kevent_update
         
-        for _ in range(client_num):
-            client = iosock.Client()
-            client.connect('218.55.118.203', 59012)
-            client_fileno = client.get_fileno()
-            print(f"connect [{client_fileno}]")
-            client.setblocking(True)
-            client.send(packed_send_bytes)
-            # client.setblocking(False)
-            clients[client_fileno] = client
-            kevent = select.kevent(client_fileno)
-            kevents[client_fileno] = kevent
-            
         sender_thread = threading.Thread(target=sending)
+        recver_thread = threading.Thread(target=recving)
+        
         sender_thread.start()
+        recver_thread.start()
+        
         sender_thread.join()
+        recver_thread.join()
         
         for fd in clients.keys():
             try:

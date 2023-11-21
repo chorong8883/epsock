@@ -6,7 +6,6 @@ class Client:
             print("Client Linux")
             
         elif system == "Darwin":
-            print("Client MacOS")
             from . import darwin
             self.client = darwin.Client()
             
@@ -21,6 +20,9 @@ class Client:
     
     def send(self, data:bytes):
         return self.client.send(data)
+    
+    def sendall(self, data:bytes):
+        self.client.sendall(data)
         
     def recv(self):
         return self.client.recv()
