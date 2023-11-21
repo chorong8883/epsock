@@ -51,19 +51,31 @@ def recv_threading():
             time_recv_data[fileno] = time.time()
             
         if -1<recv_data[fileno].find(starter) and -1<recv_data[fileno].find(closer):
-            print(f"recv total: {len(recv_data[fileno]):7,}")
+            start_index = recv_data[fileno].find(starter)
+            end_index = recv_data[fileno].find(closer)+len(closer)
             
-            packed_recv_bytes_removed = recv_data[fileno].removeprefix(starter)
-            packed_recv_bytes_removed = packed_recv_bytes_removed.removesuffix(closer)
-            unpacked_recv_bytes = unpacking(packed_recv_bytes_removed)
-            print(len(unpacked_recv_bytes))
-            print(f"{unpacked_recv_bytes[:10]}...{unpacked_recv_bytes[-10:]}")
+            data:bytes = recv_data[fileno][start_index:end_index]
+            recv_data[fileno] = recv_data[fileno][end_index:]
             
-            send_data = recv_data.pop(fileno)
-            server.send(fileno, send_data)
-            end = time.time()
-            print(f'[{fileno}] time elapsed: {end - time_recv_data[fileno]}')
-            recv_data[fileno] = b''
+            text_print = ''
+            
+            if data:
+                packed_recv_bytes_removed = data.removeprefix(starter)
+                packed_recv_bytes_removed = packed_recv_bytes_removed.removesuffix(closer)
+                unpacked_recv_bytes = unpacking(packed_recv_bytes_removed)
+                if unpacked_recv_bytes:
+                    text_print += f"[{fileno}] {len(unpacked_recv_bytes)} {unpacked_recv_bytes[:10]}...{unpacked_recv_bytes[-10:]}"
+                else:
+                    src = data.replace(b'abcdefghijklmnopqrst', b'X')
+                    text_print += f"[{fileno}] {len(src)}\n{src}"
+                
+                server.send(fileno, data)
+                end = time.time()
+                text_print += f' time elapsed: {end - time_recv_data[fileno]}'
+                print(text_print)
+            
+                
+            
     
 if __name__ == '__main__':
     signal.signal(signal.SIGINT, signal_handler)
@@ -71,10 +83,11 @@ if __name__ == '__main__':
     signal.signal(signal.SIGTERM, signal_handler)
 
     server.start('218.55.118.203', 59012)
+    print("Server Start.")
     
     recv_thread = threading.Thread(target=recv_threading)
     recv_thread.start()
     
     server.join()
-    
+    recv_thread.join()
     
