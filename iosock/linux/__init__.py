@@ -95,7 +95,7 @@ class Server(abstract.ServerBase):
         
     def close_client(self, client_fileno:int):
         client_data = self.client_by_fileno.pop(client_fileno)
-        print(f'[{client_fileno}] Try Close ')
+        print(f"[{client_fileno}] Try Close. remain send buffer {len(client_data['send_buffer_queue'].queue)}")
         with client_data["lock"]:
             while not client_data['send_buffer_queue'].empty():
                 _ = client_data['send_buffer_queue'].get_nowait()
@@ -178,11 +178,11 @@ class Server(abstract.ServerBase):
                         pass
                     else:
                         raise e
-                
-                self.__recv_queue.put_nowait({
-                    "fileno": detect_fileno,
-                    "data": result
-                })
+                if result is not None and result != b'':
+                    self.__recv_queue.put_nowait({
+                        "fileno": detect_fileno,
+                        "data": result
+                    })
                 
         self.__recv_queue.put_nowait(None)
         print("Finish Recver")
@@ -227,7 +227,7 @@ class Server(abstract.ServerBase):
                     pass
                     
                 with self.client_by_fileno[send_fileno]['lock']:
-                    if start_index < end_index:
+                    if 0 <= start_index < end_index:
                         self.client_by_fileno[send_fileno]['sending_buffer'] = self.client_by_fileno[send_fileno]['sending_buffer'][start_index:end_index]
                     else:
                         self.client_by_fileno[send_fileno]['sending_buffer'] = b''
