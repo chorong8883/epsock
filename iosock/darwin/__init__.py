@@ -46,7 +46,7 @@ class Client(abstract.ClientBase):
         self.__client_socket.sendall(data)
     
     def send(self, data:bytes) -> int:
-        return self.__client_socket.sendall(data)
+        return self.__client_socket.send(data)
         # non blocking
         # start_index = 0
         # end_index = len(data)
