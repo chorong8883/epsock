@@ -10,9 +10,20 @@ import threading
 
 from .. import abstract
 
+from contextlib import contextmanager
+
+@contextmanager
+def acquire_timeout(lock:threading.Lock, timeout:float):
+    result = lock.acquire(timeout=timeout)
+    try:
+        yield result
+    finally:
+        if result:
+            lock.release()
+
 class Client(abstract.ClientBase):
     def __init__(self) -> None:
-        self.__buffer_size = 10240
+        self.__buffer_size = 8196
         self.__client_socket : socket.socket = None
         
     def connect(self, ip:str, port:int):
@@ -133,26 +144,27 @@ class Server:
                 self.__recv_queue.put_nowait(None)
                 break
             
-            client = self.client_by_fileno.get(detect_fileno)
-            
             result = b''
-            try:
-                while True:
-                    with client['lock']:
-                        recv_bytes = client['socket'].recv(self.__buffer_size)
-                        if recv_bytes:
+            with acquire_timeout(self.client_by_fileno[detect_fileno]['lock'], 1) as acqiured:
+                try:
+                    while True:
+                        recv_bytes = self.client_by_fileno[detect_fileno]['socket'].recv(self.__buffer_size)
+                        if recv_bytes == None or recv_bytes == -1 or recv_bytes == b'':
+                            break
+                        elif recv_bytes:
                             result += recv_bytes
-                    
-            except BlockingIOError as e:
-                if e.errno == socket.EAGAIN:
-                    pass
-                else:
-                    raise e
-            
-            self.__recv_queue.put_nowait({
-                "fileno": detect_fileno,
-                "data": result
-            })
+                        else:
+                            break
+                except BlockingIOError as e:
+                    if e.errno == socket.EAGAIN:
+                        pass
+                    else:
+                        raise e
+                if result is not None and result != b'':
+                    self.__recv_queue.put_nowait({
+                        "fileno": detect_fileno,
+                        "data": result
+                    })
 
 #####################################################################################################################
 #####################################################################################################################
@@ -168,42 +180,44 @@ class Server:
                 break
         
             client_data = self.client_by_fileno.get(send_fileno)
-            
-            sending_data = b''
-            if client_data['sending_buffer'] == b'':
-                try:
-                    with client_data['lock']:
-                        client_data['sending_buffer'] = client_data['send_buffer_queue'].get_nowait()
-                        sending_data = client_data['sending_buffer']
-                except queue.Empty:
-                    return
-            else:
-                sending_data = client_data['sending_buffer']
-            
-            start_index = 0
-            end_index = len(sending_data)
-            try:
-                while start_index < end_index:
-                    with client_data['lock']:
-                        send_length = client_data['socket'].send(sending_data[start_index:end_index])
-                        if send_length <= 0:
-                            break
-                        start_index += send_length
-            except BlockingIOError as e:
-                if e.errno == socket.EAGAIN:
-                    pass
-                else:
-                    raise e
-                
-            with client_data['lock']:
-                if start_index < end_index:
-                    self.client_by_fileno[send_fileno]['sending_buffer'] = self.client_by_fileno[send_fileno]['sending_buffer'][start_index:end_index]
-                    self.__send_fileno_queue.put_nowait(send_fileno)
-                else:
-                    self.client_by_fileno[send_fileno]['sending_buffer'] = b''
-                    if not client_data['send_buffer_queue'].empty():
-                        self.__send_fileno_queue.put_nowait(send_fileno)
-                
+            if client_data:
+                with acquire_timeout(self.client_by_fileno[send_fileno]['lock'], 1) as acqiured:
+                    if acqiured:
+                        if self.client_by_fileno[send_fileno]['sending_buffer'] == b'':
+                            try:
+                                self.client_by_fileno[send_fileno]['sending_buffer'] = self.client_by_fileno[send_fileno]['send_buffer_queue'].get_nowait()
+                                self.client_by_fileno[send_fileno]['socket'].send(b'')
+                            except queue.Empty:
+                                return
+                        
+                        start_index = 0
+                        end_index = len(self.client_by_fileno[send_fileno]['sending_buffer'])
+                        try:
+                            while start_index < end_index:
+                                send_length = self.client_by_fileno[send_fileno]['socket'].send(self.client_by_fileno[send_fileno]['sending_buffer'][start_index:end_index])
+                                if send_length <= 0:
+                                    break
+                                start_index += send_length
+                        except BlockingIOError as e:
+                            if e.errno == socket.EAGAIN:
+                                pass
+                            else:
+                                raise e
+                            
+                        if 0 <= start_index < end_index:
+                            self.client_by_fileno[send_fileno]['sending_buffer'] = self.client_by_fileno[send_fileno]['sending_buffer'][start_index:end_index]
+                        else:
+                            self.client_by_fileno[send_fileno]['sending_buffer'] = b''
+                            self.client_by_fileno[send_fileno]['socket'].send(b'')
+                        
+                        if self.client_by_fileno[send_fileno]['sending_buffer'] != b'':
+                            self.__send_fileno_queue.put_nowait(send_fileno)
+                        elif not self.client_by_fileno[send_fileno]['send_buffer_queue'].empty():
+                            self.__send_fileno_queue.put_nowait(send_fileno)
+                        
+                    else:
+                        print('send lock timeout')
+                            
 #####################################################################################################################
 #####################################################################################################################
 #####################################################################################################################            
@@ -240,8 +254,11 @@ class Server:
                         client = self.client_by_fileno.get(client_socket_fileno)
                         if client:
                             s:socket.socket = client["socket"]
-                            print(s)
-                            s.shutdown(socket.SHUT_RDWR)
+                            try:
+                                s.shutdown(socket.SHUT_RDWR)
+                            except Exception as e:
+                                pass
+                            s.close()
                         client_data = self.create_client(client_socket)
                         self.client_by_fileno.update({client_socket_fileno : client_data})
                         

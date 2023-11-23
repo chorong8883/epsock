@@ -10,7 +10,7 @@ import select
 
 client_num = 10
 send_count = 10
-data_sum_count = 15
+data_sum_count = 14
 
 def packing(source_bytes: bytes, starter: bytes = b'', closer: bytes = b'', byteorder:str = 'little') -> bytes:
     bit8_length = 1
@@ -52,10 +52,10 @@ def unpacking(source_bytes: bytes, byteorder: str = 'little') -> bytes:
     else:
         return None
 
-send_bytes = b'abcdefghijklmnop'
+send_bytes = b'abcdefghijklmnop qrstuvwxyz'
 for _ in range(data_sum_count):
     send_bytes += send_bytes
-send_bytes2 = b'abcdefghijklmnop'
+send_bytes2 = b'abcdefghijklmnop qrstuvwxyz'
 for _ in range(int(data_sum_count/2)):
     send_bytes2 += send_bytes2
     
@@ -142,21 +142,40 @@ def recving():
                         else:
                             recv_data[event.ident] = data
                         
-                        if -1<recv_data[event.ident].find(starter) and -1<recv_data[event.ident].find(closer):
-                            start_index = recv_data[event.ident].find(starter)
-                            end_index = recv_data[event.ident].find(closer)+len(closer)
-                            
-                            data = recv_data[event.ident][start_index:end_index]
-                            # print(f"1 recv total: {data[:5]}...({len(data)})/{len(recv_data[event.ident]):7,}")
-                            
-                            recv_data[event.ident] = recv_data[event.ident][end_index:]
-                            # print(f"2 recv total: {data[:5]}...({len(data)})/{len(recv_data[event.ident]):7,}")
-                            
-                            packed_recv_bytes_removed = data.removeprefix(starter)
-                            packed_recv_bytes_removed = packed_recv_bytes_removed.removesuffix(closer)
-                            unpacked_recv_bytes = unpacking(packed_recv_bytes_removed)
-                            print(f"[{event.ident}] {len(unpacked_recv_bytes)} {unpacked_recv_bytes[:10]}...{unpacked_recv_bytes[-10:]}")
+                        fileno = event.ident
                         
+                        is_start = True
+                        is_len = True
+                        is_closer = True
+                        
+                        while is_start and is_len and is_closer:
+                            try:
+                                bit8_length = 1
+                                start_index = len(starter)
+                                end_index = len(starter)+bit8_length
+                                is_start = end_index <= len(recv_data[fileno]) and recv_data[fileno][:len(starter)] == starter
+                                length_of_length_bytes = recv_data[fileno][start_index:end_index]
+                                length_of_length = int.from_bytes(length_of_length_bytes, byteorder='little')
+                                
+                                start_index = end_index
+                                end_index = end_index + length_of_length
+                                is_len = end_index <= len(recv_data[fileno])
+                                
+                                length_bytes = recv_data[fileno][start_index:end_index]
+                                source_length = int.from_bytes(length_bytes, byteorder='little')
+                                
+                                start_index = end_index
+                                end_index = end_index+source_length
+                                is_closer = end_index+len(closer) <= len(recv_data[fileno]) and recv_data[fileno][end_index:end_index+len(closer)] == closer
+                            except IndexError:
+                                break
+                            
+                            if is_start and is_len and is_closer:
+                                recv_bytes:bytes = recv_data[fileno][start_index:end_index]
+                                recv_data[fileno] = recv_data[fileno][end_index+len(closer):]
+                                print(f"[{fileno}] {len(recv_bytes)} {recv_bytes[:10]}...{recv_bytes[-10:]}")
+                                client : iosock.Client = clients.pop(fileno)
+                                client.close()
                 else:
                     print('else', event)
         
