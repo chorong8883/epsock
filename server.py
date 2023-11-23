@@ -6,26 +6,8 @@ import math
 
 server = iosock.Server()
 
-def unpacking(source_bytes: bytes, byteorder: str = 'little') -> bytes:
-    bit8_length = 1
-    length_of_length = int.from_bytes(source_bytes[:bit8_length], byteorder=byteorder)
-    source_length = int.from_bytes(source_bytes[bit8_length:(bit8_length+length_of_length)], byteorder=byteorder)
-    start_index = bit8_length+length_of_length
-    end_index = bit8_length+length_of_length+source_length
-    if len(source_bytes) == end_index:
-        return source_bytes[start_index:end_index]
-    else:
-        return None
-
 starter = b'%w$d#'
 closer = b'&sa@f#d$'
-
-# packed_recv_bytes_removed = recv_bytes.removeprefix(starter)
-# packed_recv_bytes_removed = recv_bytes.removesuffix(closer)
-# unpacked_recv_bytes = unpacking(packed_recv_bytes_removed)
-# print(unpacked_recv_bytes)
-
-
 
 def recv_threading():
     count = {}
@@ -41,7 +23,6 @@ def recv_threading():
         if not fileno in count:
             count[fileno] = 0
     
-        
         if fileno in recv_data:
             if recv_data[fileno] == b'':
                 time_recv_data[fileno] = time.time()
