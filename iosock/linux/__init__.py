@@ -30,7 +30,8 @@ class Server(abstract.ServerBase):
         self.__lock_by_fileno = collections.defaultdict(threading.Lock)
         self.__send_buffer_queue_by_fileno = collections.defaultdict(queue.Queue)
         self.__sending_buffer_by_fileno = collections.defaultdict(bytes)
-        self.__thread_by_tid = collections.defaultdict(threading.Thread)
+        self.__running_thread_by_tid = collections.defaultdict(threading.Thread)
+        self.__finish_thread_by_tid = collections.defaultdict(threading.Thread)
         
         self.__recv_queue = queue.Queue()
         self.__send_fileno_queue = queue.Queue()
@@ -61,14 +62,13 @@ class Server(abstract.ServerBase):
         self.__listen_socket.setblocking(False)
         self.__listen_socket.bind((listen_ip, listen_port))
         self.__listen_socket.listen(backlog)
-        
-        
         listen_socket_fileno = self.__listen_socket.fileno()
+        
+        # Print Info
         res = self.__listen_socket.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
         print(f"[{listen_socket_fileno:2}] SO_RCVBUF : {res}")
         res = self.__listen_socket.getsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF)
         print(f"[{listen_socket_fileno:2}] SO_SNDBUF : {res}")
-        
         res = self.__listen_socket.getsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY)
         print(f"[{listen_socket_fileno:2}] TCP_NODELAY : {res}")
         
@@ -86,7 +86,7 @@ class Server(abstract.ServerBase):
         for _ in range(count_thread):
             et = threading.Thread(target=self.__epoll_thread_function)
             et.start()
-            self.__thread_by_tid[et.ident] = et
+            self.__running_thread_by_tid[et.ident] = et
             
         self.__close_event, self.__close_event_listener = socket.socketpair()
         self.__closer_eventmask = select.EPOLLIN | select.EPOLLPRI | select.EPOLLHUP | select.EPOLLRDHUP
@@ -95,6 +95,18 @@ class Server(abstract.ServerBase):
     def close(self):
         self.__is_running.value = False
         self.__close_event.send(b'close')
+        
+        for tid in self.__finish_thread_by_tid:
+            self.__finish_thread_by_tid[tid].join()
+        
+        self.__epoll.close()
+        self.__send_fileno_queue.put_nowait(None)
+        self.__recv_queue.put_nowait(None)
+        
+        client_fileno_list = list(self.__socket_by_fileno.keys())
+        for fileno in client_fileno_list:
+            self.close_client(fileno)
+
         
     def close_client(self, fileno:int):
         try:
@@ -119,7 +131,7 @@ class Server(abstract.ServerBase):
         except KeyError:
             pass
         
-        print(f"[{fileno}] Try Close. send buffer remain:{len(sending_buffer)} bytes. queue remain:{len_send_buffer_queue}")
+        print(f"[{fileno:2}] Try Close. send buffer remain:{len(sending_buffer)} bytes. queue remain:{len_send_buffer_queue}")
         
         if send_buffer_queue:
             while not send_buffer_queue.empty():
@@ -131,11 +143,11 @@ class Server(abstract.ServerBase):
             except ConnectionResetError:
                 pass
             except BrokenPipeError:
-                print(f"[{fileno}] BrokenPipeError")
+                print(f"[{fileno:2}] BrokenPipeError")
                 pass
             except OSError as e:
                 if e.errno == errno.ENOTCONN: # errno 107
-                    print(f"[{fileno}] ENOTCONN")
+                    print(f"[{fileno:2}] ENOTCONN")
                     pass
                 else:
                     raise e
@@ -143,7 +155,7 @@ class Server(abstract.ServerBase):
                 print(e, traceback.format_exc())
             client_socket.close()
         
-        print(f'[{fileno}] Closed')
+        print(f'[{fileno:2}] Closed')
 
     def recv(self):
         return self.__recv_queue.get()
@@ -294,6 +306,8 @@ class Server(abstract.ServerBase):
     
     def __epoll_thread_function(self):
         try:
+            tid = threading.get_ident()
+            print(f"{datetime.now()} [{tid}:TID] Finish Epoll Work")
             while self.__is_running.value:
                 events = self.__epoll.poll()
                 for detect_fileno, detect_event in events:
@@ -310,40 +324,34 @@ class Server(abstract.ServerBase):
                             print(f"{datetime.now()} [{detect_fileno:2}] [{threading.get_ident()}] accept", detect_fileno, detect_event)
                     
                     elif detect_fileno == self.__close_event_listener.fileno():
-                        tid = threading.get_ident()
-                        if tid in self.__thread_by_tid:
-                            self.__thread_by_tid[tid]
-        
-        
-                        self.__len_close_epoll_thread.value += 1
-                        if self.__len_close_epoll_thread.value < len(self.__epoll_threads):
-                            self.__close_event.send(b'close')
+                        if tid in self.__running_thread_by_tid:
+                            self.__finish_thread_by_tid[tid] = self.__running_thread_by_tid.pop(tid)
                         else:
-                            self.__epoll.close()
-                            self.__send_fileno_queue.put_nowait(None)
-                            self.__recv_queue.put_nowait(None)
+                            print(f'unknown thread {tid} - this is impossible')
+                            _tid, runnning_thread = self.__running_thread_by_tid.popitem()
+                            self.__finish_thread_by_tid[_tid] = runnning_thread
                             
-                            client_fileno_list = list(self.__socket_by_fileno.keys())
-                            for fileno in client_fileno_list:
-                                self.close_client(fileno)
+                        if 0 < len(self.__running_thread_by_tid):
+                            self.__close_event.send(b'close')
+                            
+                    elif detect_fileno in self.__socket_by_fileno:
+                        if detect_event & (select.EPOLLHUP | select.EPOLLRDHUP):
+                            try:
+                                self.__epoll.unregister(detect_fileno)
+                                self.close_client(detect_fileno)
+                            except Exception as e:
+                                print(detect_fileno, e, traceback.format_exc())
                         
-                                
-                    elif detect_event & (select.EPOLLHUP | select.EPOLLRDHUP):
-                        try:
-                            self.__epoll.unregister(detect_fileno)
-                            self.close_client(detect_fileno)
-                        except Exception as e:
-                            print(detect_fileno, e, traceback.format_exc())
-                    
-                    elif detect_event & select.EPOLLOUT:
-                        self.__epollout_work(detect_fileno)
-                        
-                    elif detect_event & select.EPOLLIN:
-                        self.__epollin_work(detect_fileno)
-                        
+                        elif detect_event & select.EPOLLOUT:
+                            self.__epollout_work(detect_fileno)
+                            
+                        elif detect_event & select.EPOLLIN:
+                            self.__epollin_work(detect_fileno)
+                        else:
+                            print("unknown event", detect_fileno, detect_event)
                     else:
-                        print("unknown", detect_fileno, detect_event)
+                        print("unknown detection", detect_fileno, detect_event)
         except Exception as e:
             print(e, traceback.format_exc())
         
-        print(f"{datetime.now()} [{threading.get_ident()}] Finish Epoll")
+        print(f"{datetime.now()} [{tid}:TID] Finish Epoll Work")

@@ -26,3 +26,10 @@ class ServerBase(metaclass=abc.ABCMeta):
     
     @abstractmethod
     def close(self): pass
+    
+    @abstractmethod
+    def send(self, data:bytes) -> int: pass
+    
+    @abstractmethod
+    def recv(self) -> bytes: pass
+    

@@ -51,11 +51,11 @@ class Server:
     def start(self, listen_ip:str, listen_port:int, count_thread:int = 2, backlog:int = 5):
         self.server.start(listen_ip, listen_port, count_thread, backlog)
     
-    def stop(self):
-        self.server.stop()
-    
-    def recv(self):
-        return self.server.recv()
+    def close(self):
+        self.server.close()
     
     def send(self, fileno:int, data:bytes):
         self.server.send(fileno, data)
+    
+    def recv(self):
+        return self.server.recv()
