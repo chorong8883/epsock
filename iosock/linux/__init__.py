@@ -8,20 +8,14 @@ import collections
 import queue
 import errno
 import traceback
+from datetime import datetime
 
 from multiprocessing.pool import ThreadPool
 
 from .. import abstract
+from .. import exception
 
 from contextlib import contextmanager
-
-@contextmanager
-def acquire_timeout(lock:threading.Lock, timeout:float):
-    result = lock.acquire(timeout=timeout)
-    try:
-        yield result
-    finally:
-        lock.release()
 
 class Client(abstract.ClientBase):
     def __init__(self) -> None:
@@ -29,296 +23,327 @@ class Client(abstract.ClientBase):
         
 class Server(abstract.ServerBase):
     def __init__(self) -> None:
-        self.__buffer_size = 10240
+        self.__buffer_size = 8196
         self.__is_running = multiprocessing.Value(ctypes.c_bool, False)
-        self.client_by_fileno = collections.defaultdict(dict)
-        self.__recv_queue = queue.Queue()
         
-        self.__detect_epollin_fileno_queue = queue.Queue()
+        self.__socket_by_fileno = collections.defaultdict(socket.socket)
+        self.__lock_by_fileno = collections.defaultdict(threading.Lock)
+        self.__send_buffer_queue_by_fileno = collections.defaultdict(queue.Queue)
+        self.__sending_buffer_by_fileno = collections.defaultdict(bytes)
+        self.__thread_by_tid = collections.defaultdict(threading.Thread)
+        
+        self.__recv_queue = queue.Queue()
         self.__send_fileno_queue = queue.Queue()
         
-        self.temp_recv_data = collections.defaultdict(bytes)
+        self.__recv_eventmask = select.EPOLLIN | select.EPOLLPRI | select.EPOLLHUP | select.EPOLLRDHUP | select.EPOLLET
+        self.__send_eventmask = select.EPOLLIN | select.EPOLLPRI | select.EPOLLOUT | select.EPOLLHUP | select.EPOLLRDHUP | select.EPOLLET
         
-    def create_client(self, client_socket) -> dict:
-        return {
-            "socket" : client_socket,
-            "lock" : threading.Lock(),
-            "send_buffer_queue" : queue.Queue(),
-            "sending_buffer" : b''
-        }
-        
-    def get_listener(self, listen_ip:str, listen_port:int, is_blocking:bool = False, backlog:int = 5) -> socket.socket:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        s.setblocking(is_blocking)
-        s.bind((listen_ip, listen_port))
-        s.listen(backlog)
-        return s 
-
-    def start(self, listen_ip:str, listen_port:int, is_blocking:bool = False, backlog:int = 5):
-        system = platform.system()
-        if system == "Linux":
-            self.__listen_socket = self.get_listener(listen_ip, listen_port, is_blocking, backlog)
-
-            self.__epoll = select.epoll()
-            listener_eventmask = select.EPOLLIN | select.EPOLLHUP | select.EPOLLRDHUP | select.EPOLLET
-            self.__epoll.register(self.__listen_socket, listener_eventmask)
-            
-            self.__is_running.value = True
-            
-            self.__len_close_epoll_thread = multiprocessing.Value(ctypes.c_int8, 0)
-            self.__epoll_threads = []
-            for _ in range(1):
-                et = threading.Thread(target=self.__epoll_thread_function)
-                et.start()
-                self.__epoll_threads.append(et)
-            
-            self.close_event, self.close_event_listener = socket.socketpair()
-            self.__epoll.register(self.close_event_listener, listener_eventmask)
-            
-            self.__recv_work_thread = threading.Thread(target=self.__recv_work)
-            self.__send_work_thread = threading.Thread(target=self.__send_work)
-            
-            self.__recv_work_thread.start()
-            self.__send_work_thread.start()
-            
-            
-            
-        elif system == "Darwin":
-            print("This system is MacOS. Current process execute for Linux.")
-            
-        elif system == "Windows":
-            print("This system is Windows. Current process execute for Linux.")
-            
-    def join(self):
-        for et in self.__epoll_threads:
-            et.join()
-        
-        self.close_event.close()
-        
-        self.__recv_work_thread.join()
-        self.__send_work_thread.join()
-    
-    def stop(self):
-        self.__is_running.value = False
-        self.close_event.send(b'close')
-        
-    def close_client(self, client_fileno:int):
-        client_data = self.client_by_fileno.pop(client_fileno)
-        print(f"[{client_fileno}] Try Close. remain send buffer {len(client_data['send_buffer_queue'].queue)}")
-        with client_data["lock"]:
-            while not client_data['send_buffer_queue'].empty():
-                _ = client_data['send_buffer_queue'].get_nowait()
-        
+    @contextmanager
+    def __acquire_timeout(self, lock:threading.Lock, timeout:float):
+        result = lock.acquire(timeout=timeout)
         try:
-        #     with client_data["lock"]:
-        #         client_data["socket"].setblocking(True)
-        #     with client_data["lock"]:
-        #         client_data["socket"].settimeout(1)
-        #     print(f'[{client_fileno}] client_socket settimeout')
-        #     try:
-        #         while True:
-        #             if client_data['sending_buffer'] == b'':
-        #                 print(f"[{client_fileno}] {len(client_data['send_buffer_queue'].queue)}")
-        #                 client_data['sending_buffer'] = client_data['send_buffer_queue'].get_nowait()
-                    
-        #             start_index = 0
-        #             end_index = len(client_data['sending_buffer'])
-        #             while start_index < end_index:
-        #                 with client_data["lock"]:
-        #                     send_length = client_data["socket"].send(client_data['sending_buffer'][start_index:end_index])
-        #                     if send_length <= 0:
-        #                         break
-        #                     start_index += send_length
-        #             client_data['sending_buffer'] = b''
-        #     except queue.Empty:
-        #         print(f"[{client_fileno}] queue.Empty")
-        #     print(f'[{client_fileno}] before client_socket.shutdown')
-            with client_data["lock"]:
-                client_data["socket"].shutdown(socket.SHUT_RDWR)
-        # except TimeoutError:
-        #     print(f"[{client_fileno}] TimeoutError")
-        #     pass
-        except ConnectionResetError:
-            pass
-        except BrokenPipeError:
-            print(f"[{client_fileno}] BrokenPipeError")
-            pass
-        except OSError as e:
-            if e.errno == errno.ENOTCONN: # errno 107
-                print(f"[{client_fileno}] ENOTCONN")
-                pass
-            else:
-                raise e
-        except Exception as e:
-            print(e, traceback.format_exc())
-        
-        with client_data["lock"]:
-            client_data["socket"].close()
-        
-        print(f'[{client_fileno}] Closed')
+            yield result
+        finally:
+            if result:
+                lock.release()
 
-#####################################################################################################################
-#####################################################################################################################
-#####################################################################################################################
-    
+    def start(self, listen_ip:str, listen_port:int, count_thread:int, backlog:int = 5):
+        self.__listen_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        
+        self.__listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # self.__listen_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        
+        recv_buf_size = self.__listen_socket.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
+        send_buf_size = self.__listen_socket.getsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF)
+        self.__listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, recv_buf_size*2)
+        self.__listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, send_buf_size*2)
+        
+        self.__listen_socket.setblocking(False)
+        self.__listen_socket.bind((listen_ip, listen_port))
+        self.__listen_socket.listen(backlog)
+        
+        
+        listen_socket_fileno = self.__listen_socket.fileno()
+        res = self.__listen_socket.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
+        print(f"[{listen_socket_fileno:2}] SO_RCVBUF : {res}")
+        res = self.__listen_socket.getsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF)
+        print(f"[{listen_socket_fileno:2}] SO_SNDBUF : {res}")
+        
+        res = self.__listen_socket.getsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY)
+        print(f"[{listen_socket_fileno:2}] TCP_NODELAY : {res}")
+        
+        self.__socket_by_fileno.update({listen_socket_fileno : self.__listen_socket})
+        self.__lock_by_fileno.update({listen_socket_fileno : threading.Lock()})
+        self.__send_buffer_queue_by_fileno.update({listen_socket_fileno : queue.Queue()})
+        self.__sending_buffer_by_fileno.update({listen_socket_fileno : b''})
+        
+        self.__epoll = select.epoll()
+        self.__listener_eventmask = select.EPOLLIN | select.EPOLLPRI | select.EPOLLHUP | select.EPOLLRDHUP
+        self.__epoll.register(self.__listen_socket, self.__listener_eventmask)
+        
+        self.__is_running.value = True
+        
+        for _ in range(count_thread):
+            et = threading.Thread(target=self.__epoll_thread_function)
+            et.start()
+            self.__thread_by_tid[et.ident] = et
+            
+        self.__close_event, self.__close_event_listener = socket.socketpair()
+        self.__closer_eventmask = select.EPOLLIN | select.EPOLLPRI | select.EPOLLHUP | select.EPOLLRDHUP
+        self.__epoll.register(self.__close_event_listener, self.__closer_eventmask)
+            
+    def close(self):
+        self.__is_running.value = False
+        self.__close_event.send(b'close')
+        
+    def close_client(self, fileno:int):
+        try:
+            _ = self.__lock_by_fileno.pop(fileno)
+        except KeyError:
+            pass
+        client_socket:socket.socket = None
+        try:
+            self.__socket_by_fileno.pop(fileno)
+        except KeyError:
+            pass
+        len_send_buffer_queue = -1
+        send_buffer_queue:queue.Queue = None
+        try:
+            send_buffer_queue = self.__send_buffer_queue_by_fileno.pop(fileno)
+            len_send_buffer_queue = len(send_buffer_queue.queue)
+        except KeyError:
+            pass
+        sending_buffer:bytes = b''
+        try:
+            sending_buffer = self.__sending_buffer_by_fileno.pop(fileno)
+        except KeyError:
+            pass
+        
+        print(f"[{fileno}] Try Close. send buffer remain:{len(sending_buffer)} bytes. queue remain:{len_send_buffer_queue}")
+        
+        if send_buffer_queue:
+            while not send_buffer_queue.empty():
+                _ = send_buffer_queue.get_nowait()
+            
+        if client_socket:
+            try:
+                client_socket.shutdown(socket.SHUT_RDWR)
+            except ConnectionResetError:
+                pass
+            except BrokenPipeError:
+                print(f"[{fileno}] BrokenPipeError")
+                pass
+            except OSError as e:
+                if e.errno == errno.ENOTCONN: # errno 107
+                    print(f"[{fileno}] ENOTCONN")
+                    pass
+                else:
+                    raise e
+            except Exception as e:
+                print(e, traceback.format_exc())
+            client_socket.close()
+        
+        print(f'[{fileno}] Closed')
+
     def recv(self):
         return self.__recv_queue.get()
     
-    def __recv_work(self):
-        while self.__is_running.value:
-            detect_fileno = self.__detect_epollin_fileno_queue.get()
-            if not detect_fileno:
-                break
-            
-            client_data = self.client_by_fileno.get(detect_fileno)
-            if client_data:
-                result = b''
-                try:
-                    while True:
-                        with acquire_timeout(client_data['lock'], 1) as acqiured:
-                            if acqiured:
-                                recv_bytes = client_data['socket'].recv(self.__buffer_size)
-                                if recv_bytes:
-                                    result += recv_bytes
-                                else:
-                                    break
-                            else:
-                                print("recv work timedout")
-                        
-                except BlockingIOError as e:
-                    if e.errno == socket.EAGAIN:
-                        pass
-                    else:
-                        raise e
-                if result is not None and result != b'':
-                    self.__recv_queue.put_nowait({
-                        "fileno": detect_fileno,
-                        "data": result
-                    })
-                
-        self.__recv_queue.put_nowait(None)
-        print("Finish Recver")
-#####################################################################################################################
-#####################################################################################################################
-#####################################################################################################################
-
     def send(self, send_fileno:int, data:bytes = None):
-        self.client_by_fileno[send_fileno]['send_buffer_queue'].put_nowait(data)
-        self.__send_fileno_queue.put_nowait(send_fileno)
+        self.__send_buffer_queue_by_fileno[send_fileno].put_nowait(data)
+        self.__epoll.modify(send_fileno, self.__send_eventmask)
             
-    def __send_work(self):
-        while self.__is_running.value:
-            send_fileno = self.__send_fileno_queue.get()
-            if not send_fileno:
-                break
-        
-            if self.client_by_fileno[send_fileno]:
-                with acquire_timeout(self.client_by_fileno[send_fileno]['lock'], 1) as acqiured:
-                    if acqiured:
-                        if self.client_by_fileno[send_fileno]['sending_buffer'] == b'':
-                            try:
-                                self.client_by_fileno[send_fileno]['sending_buffer'] = self.client_by_fileno[send_fileno]['send_buffer_queue'].get_nowait()
-                            except queue.Empty:
-                                continue
-                    else:
-                        print("send work timedout buffering")
-                
-                start_index = 0
-                end_index = len(self.client_by_fileno[send_fileno]['sending_buffer'])
-                try:
-                    while start_index < end_index:
-                        with acquire_timeout(self.client_by_fileno[send_fileno]['lock'], 1) as acqiured:
-                            if acqiured:
-                                send_length = self.client_by_fileno[send_fileno]['socket'].send(self.client_by_fileno[send_fileno]['sending_buffer'][start_index:end_index])
-                                if send_length <= 0:
-                                    break
-                                start_index += send_length
-                            else:
-                                print("send work timedout")
+#####################################################################################################################
+#####################################################################################################################
+#####################################################################################################################
+#####################################################################################################################
+#####################################################################################################################
+#####################################################################################################################
+            
+    def __epoll_accepting(self, detect_fileno:int):
+        lock = self.__lock_by_fileno.get(detect_fileno)
+        if lock:
+            with self.__acquire_timeout(lock, 0.1) as acquired:
+                if acquired:
+                    try:
+                        while True:
+                            client_socket, address = self.__listen_socket.accept()
+                            client_socket_fileno = client_socket.fileno()
+                            client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                            res = client_socket.getsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY)
+                            print(f"[{client_socket_fileno:2}] TCP_NODELAY : {res}")
+                            res = client_socket.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
+                            print(f"[{client_socket_fileno:2}] SO_RCVBUF : {res}")
+                            res = client_socket.getsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF)
+                            print(f"[{client_socket_fileno:2}] SO_SNDBUF : {res}")
+                            
+                            client_socket.setblocking(False)
+                            
+                            accepting_text = f"[{client_socket_fileno:2}] accept {address[0]}:{address[1]}"
+                            exist_client_socket = self.__socket_by_fileno.get(client_socket_fileno)
+                            if exist_client_socket:
+                                try:
+                                    exist_client_socket.shutdown(socket.SHUT_RDWR)
+                                    accepting_text += "exist shutdown,"
+                                except OSError as e:
+                                    if e.errno == errno.ENOTCONN: # errno 107
+                                        pass
+                                    else:
+                                        raise e
+                                exist_client_socket.close()
+                                try:
+                                    self.__epoll.unregister(client_socket)
+                                except Exception as e:
+                                    print(e)
                         
-                except BlockingIOError as e:
-                    if e.errno == socket.EAGAIN:
-                        pass
-                    else:
-                        raise e
-                except BrokenPipeError:
-                    # print(f"[{self.client_by_fileno[send_fileno]['socket'].fileno()}] BrokenPipeError cur:{send_fileno}")
-                    pass
-                    
-                with self.client_by_fileno[send_fileno]['lock']:
-                    if 0 <= start_index < end_index:
-                        self.client_by_fileno[send_fileno]['sending_buffer'] = self.client_by_fileno[send_fileno]['sending_buffer'][start_index:end_index]
-                    else:
-                        self.client_by_fileno[send_fileno]['sending_buffer'] = b''
-                
-                if self.client_by_fileno[send_fileno]['sending_buffer'] != b'':
-                    self.__send_fileno_queue.put_nowait(send_fileno)
-                elif not self.client_by_fileno[send_fileno]['send_buffer_queue'].empty():
-                    self.__send_fileno_queue.put_nowait(send_fileno)
-    
-        print("Finish Sender")
-#####################################################################################################################
-#####################################################################################################################
-#####################################################################################################################            
+                            self.__socket_by_fileno.update({client_socket_fileno : client_socket})
+                            self.__lock_by_fileno.update({client_socket_fileno : threading.Lock()})
+                            self.__send_buffer_queue_by_fileno.update({client_socket_fileno : queue.Queue()})
+                            self.__sending_buffer_by_fileno.update({client_socket_fileno : b''})
+                            
+                            self.__epoll.register(client_socket, self.__recv_eventmask)    
+                            
+                            print(accepting_text)
+                            
+                    except BlockingIOError as e:
+                        if e.errno == socket.EAGAIN:
+                            pass
+                        else:
+                            raise e
+                else:
+                    self.__epoll.modify(self.__listen_socket, self.__listener_eventmask)
+                        
+        
             
+    def __epollin_work(self, detect_fileno:int):
+        lock = self.__lock_by_fileno.get(detect_fileno)
+        if lock:
+            with self.__acquire_timeout(lock, 0.1) as acqiured:
+                client_socket = self.__socket_by_fileno.get(detect_fileno)
+                if acqiured:
+                    # text_print = f"{datetime.now()} [{detect_fileno:2}] [{threading.get_ident()}] recv "
+                    recv_bytes = b''
+                    try:
+                        while True:
+                            temp_recv_bytes = client_socket.recv(self.__buffer_size)
+                            if temp_recv_bytes == None or temp_recv_bytes == -1 or temp_recv_bytes == b'':
+                                break
+                            else:
+                                recv_bytes += temp_recv_bytes
+                        
+                    except BlockingIOError as e:
+                        if e.errno == socket.EAGAIN:
+                            pass
+                        else:
+                            raise e
+                        
+                    if recv_bytes:
+                        self.__recv_queue.put_nowait({
+                            "fileno": detect_fileno,
+                            "data": recv_bytes
+                        })
+                else:
+                    print(f"{datetime.now()} [{detect_fileno:2}] [{threading.get_ident()}] recv work timeout")
+    
+    def __epollout_work(self, detect_fileno:int):
+        try:
+            # text_print = f"{datetime.now()} [{detect_fileno:2}] "
+            with self.__acquire_timeout(self.__lock_by_fileno[detect_fileno], 0.1) as acqiured:
+                # text_print += f"[{threading.get_ident()}] send "
+                send_bytes = 0
+                if acqiured:
+                    try:
+                        while True:
+                            if self.__sending_buffer_by_fileno[detect_fileno] == b'':
+                                self.__sending_buffer_by_fileno[detect_fileno] = self.__send_buffer_queue_by_fileno[detect_fileno].get_nowait()                                
+                            send_length = self.__socket_by_fileno[detect_fileno].send(self.__sending_buffer_by_fileno[detect_fileno])
+                            if send_length <= 0:
+                                break
+                            send_bytes += send_length
+                            self.__sending_buffer_by_fileno[detect_fileno] = self.__sending_buffer_by_fileno[detect_fileno][send_length:]
+                    except BlockingIOError as e:
+                        if e.errno == socket.EAGAIN:
+                            pass
+                        else:
+                            raise e
+                    except BrokenPipeError:
+                        pass
+                    except queue.Empty:
+                        pass
+                else:
+                    # text_print += "send work timeout "
+                    print("send work timeout ")
+                    
+                # text_print += f"{send_bytes:7} bytes. "
+        
+            if self.__sending_buffer_by_fileno[detect_fileno] != b'':
+                self.__epoll.modify(detect_fileno, self.__send_eventmask)
+                # text_print += f"retry;buffer remain:{len(self.__sending_buffer_by_fileno[detect_fileno])} queue remain:{len(self.__send_buffer_queue_by_fileno[detect_fileno].queue)}"
+                
+            elif not self.__send_buffer_queue_by_fileno[detect_fileno].empty():
+                self.__epoll.modify(detect_fileno, self.__send_eventmask)
+                # text_print += f"retry;buffer remain:{len(self.__sending_buffer_by_fileno[detect_fileno])} queue remain:{len(self.__send_buffer_queue_by_fileno[detect_fileno].queue)}"
+                
+            else:
+                self.__epoll.modify(detect_fileno, self.__recv_eventmask)
+                # text_print += f"to recv"
+                
+            # print(text_print)
+            
+        except Exception as e:
+            print(e, traceback.format_exc())
+    
     def __epoll_thread_function(self):
-        while self.__is_running.value:
-            events = self.__epoll.poll()
-            for detect_fileno, detect_event in events:
-                if detect_fileno == self.__listen_socket.fileno():
-                    if detect_event & (select.EPOLLHUP | select.EPOLLRDHUP):
-                        print(f"Detect Close Listner")
-                        self.__is_running.value = False
+        try:
+            while self.__is_running.value:
+                events = self.__epoll.poll()
+                for detect_fileno, detect_event in events:
+                    if detect_fileno == self.__listen_socket.fileno():
+                        if detect_event & (select.EPOLLHUP | select.EPOLLRDHUP):
+                            # self.__listen_socket = self.__get_listener(self.__listen_ip, self.__listen_port, self.__backlog)
+                            print(f"{datetime.now()} [{detect_fileno:2}] [{threading.get_ident()}] Listener HUP")
+                            pass
+                            
+                        elif detect_event & select.EPOLLIN:
+                            self.__epoll_accepting(detect_fileno)
+                        
+                        else:
+                            print(f"{datetime.now()} [{detect_fileno:2}] [{threading.get_ident()}] accept", detect_fileno, detect_event)
+                    
+                    elif detect_fileno == self.__close_event_listener.fileno():
+                        tid = threading.get_ident()
+                        if tid in self.__thread_by_tid:
+                            self.__thread_by_tid[tid]
+        
+        
+                        self.__len_close_epoll_thread.value += 1
+                        if self.__len_close_epoll_thread.value < len(self.__epoll_threads):
+                            self.__close_event.send(b'close')
+                        else:
+                            self.__epoll.close()
+                            self.__send_fileno_queue.put_nowait(None)
+                            self.__recv_queue.put_nowait(None)
+                            
+                            client_fileno_list = list(self.__socket_by_fileno.keys())
+                            for fileno in client_fileno_list:
+                                self.close_client(fileno)
+                        
+                                
+                    elif detect_event & (select.EPOLLHUP | select.EPOLLRDHUP):
+                        try:
+                            self.__epoll.unregister(detect_fileno)
+                            self.close_client(detect_fileno)
+                        except Exception as e:
+                            print(detect_fileno, e, traceback.format_exc())
+                    
+                    elif detect_event & select.EPOLLOUT:
+                        self.__epollout_work(detect_fileno)
                         
                     elif detect_event & select.EPOLLIN:
-                        client_socket, address = self.__listen_socket.accept()
-                        print(f"accept {client_socket.fileno()} {address}")
-                        client_socket.setblocking(False)
-                        client_socket_fileno = client_socket.fileno()
-                        exist_client = self.client_by_fileno.get(client_socket_fileno)
-                        if exist_client:
-                            exist_socket:socket.socket = exist_client["socket"]
-                            try:
-                                exist_socket.shutdown(socket.SHUT_RDWR)
-                            except OSError as e:
-                                if e.errno == errno.ENOTCONN: # errno 107
-                                    pass
-                                else:
-                                    raise e
-                        client_data = self.create_client(client_socket)
-                        self.client_by_fileno.update({client_socket_fileno : client_data})
+                        self.__epollin_work(detect_fileno)
                         
-                        client_eventmask = select.EPOLLIN | select.EPOLLHUP | select.EPOLLRDHUP | select.EPOLLET
-                        self.__epoll.register(client_socket, client_eventmask)
-                    
                     else:
-                        print("accept", detect_fileno, detect_event)
-                
-                elif detect_fileno == self.close_event_listener.fileno():
-                    self.__len_close_epoll_thread.value += 1
-                    if self.__len_close_epoll_thread.value < len(self.__epoll_threads):
-                        self.close_event.send(b'close')
-                    
-                elif detect_event & (select.EPOLLHUP | select.EPOLLRDHUP):
-                    self.__epoll.unregister(detect_fileno)
-                    self.close_client(detect_fileno)
-                    
-                elif detect_event & select.EPOLLIN:
-                    self.__detect_epollin_fileno_queue.put_nowait(detect_fileno)
-                    
-                else:
-                    print("unknown", detect_fileno, detect_event)
+                        print("unknown", detect_fileno, detect_event)
+        except Exception as e:
+            print(e, traceback.format_exc())
         
-        self.__epoll.close()
-        self.__detect_epollin_fileno_queue.put_nowait(None)
-        self.__send_fileno_queue.put_nowait(None)
-        
-        client_fileno_list = list(self.client_by_fileno.keys())
-        for client_fileno in client_fileno_list:
-            self.close_client(client_fileno)
-        
-        for key in self.temp_recv_data:
-            print(f"[{threading.get_ident()}] [{key}] recv {len(self.temp_recv_data[key])} bytes\n{self.temp_recv_data[key]}")
-            
-        print("Finish Epoll")
+        print(f"{datetime.now()} [{threading.get_ident()}] Finish Epoll")

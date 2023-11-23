@@ -48,15 +48,12 @@ class Server:
         elif system == "Windows":
             print("Server Windows")
 
-    def start(self, listen_ip:str, listen_port:int, is_blocking:bool = False, backlog:int = 5):
-        self.server.start(listen_ip, listen_port, is_blocking, backlog)
+    def start(self, listen_ip:str, listen_port:int, count_thread:int = 2, backlog:int = 5):
+        self.server.start(listen_ip, listen_port, count_thread, backlog)
     
     def stop(self):
         self.server.stop()
     
-    def join(self):
-        self.server.join()
-        
     def recv(self):
         return self.server.recv()
     

@@ -25,14 +25,10 @@ closer = b'&sa@f#d$'
 # unpacked_recv_bytes = unpacking(packed_recv_bytes_removed)
 # print(unpacked_recv_bytes)
 
-def signal_handler(num_recv_signal, frame):
-    print(f"\nGet Signal: {signal.Signals(num_recv_signal).name}")
-    server.stop()
 
 
 def recv_threading():
-    
-    
+    count = {}
     recv_data = {}
     time_recv_data = {}
     while True:
@@ -42,6 +38,9 @@ def recv_threading():
         
         fileno = recv_temp_data['fileno']
         data = recv_temp_data['data']
+        if not fileno in count:
+            count[fileno] = 0
+    
         
         if fileno in recv_data:
             if recv_data[fileno] == b'':
@@ -85,20 +84,27 @@ def recv_threading():
                 recv_data[fileno] = recv_data[fileno][end_index+len(closer):]
                 server.send(fileno, recv_bytes)
                 end = time.time()
-                text_print = f'[{fileno}] recv {len(recv_bytes)} bytes. over:{len(recv_data[fileno])} time elapsed: {end - time_recv_data[fileno]}'
+                
+                recv_bytes_replaced = recv_bytes.replace(b'abcdefghijklmnop qrstuvwxyz', b'')
+                
+                text_print = f'[{fileno:2}][{count[fileno]:5}] recv {len(recv_bytes):7} bytes. over:{len(recv_data[fileno]):8} time elapsed: {math.floor((end - time_recv_data[fileno])*100000)/100000:.5f} replace:{recv_bytes_replaced}'
                 print(text_print)
-                    
+            else:
+                count[fileno] += 1
+                
+def signal_handler(num_recv_signal, frame):
+    print(f"\nGet Signal: {signal.Signals(num_recv_signal).name}")
+    server.close()
+
 if __name__ == '__main__':
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGABRT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    server.start('218.55.118.203', 59012)
+    server.start('218.55.118.203', 59012, 5)
     print("Server Start.")
     
     recv_thread = threading.Thread(target=recv_threading)
     recv_thread.start()
-    
-    server.join()
     recv_thread.join()
     

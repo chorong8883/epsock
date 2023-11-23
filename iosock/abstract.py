@@ -25,7 +25,4 @@ class ServerBase(metaclass=abc.ABCMeta):
     def start(self): pass
     
     @abstractmethod
-    def stop(self): pass
-    
-    @abstractmethod
-    def join(self): pass
+    def close(self): pass
