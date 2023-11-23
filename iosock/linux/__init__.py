@@ -50,9 +50,8 @@ class Server(abstract.ServerBase):
 
     def start(self, listen_ip:str, listen_port:int, count_thread:int, backlog:int = 5):
         self.__listen_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        
         self.__listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        # self.__listen_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        # self.__listen_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1) 
         
         recv_buf_size = self.__listen_socket.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
         send_buf_size = self.__listen_socket.getsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF)
@@ -63,14 +62,6 @@ class Server(abstract.ServerBase):
         self.__listen_socket.bind((listen_ip, listen_port))
         self.__listen_socket.listen(backlog)
         listen_socket_fileno = self.__listen_socket.fileno()
-        
-        # Print Info
-        res = self.__listen_socket.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
-        print(f"[{listen_socket_fileno:2}] SO_RCVBUF : {res}")
-        res = self.__listen_socket.getsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF)
-        print(f"[{listen_socket_fileno:2}] SO_SNDBUF : {res}")
-        res = self.__listen_socket.getsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY)
-        print(f"[{listen_socket_fileno:2}] TCP_NODELAY : {res}")
         
         self.__socket_by_fileno.update({listen_socket_fileno : self.__listen_socket})
         self.__lock_by_fileno.update({listen_socket_fileno : threading.Lock()})
@@ -98,6 +89,7 @@ class Server(abstract.ServerBase):
         
         for tid in self.__finish_thread_by_tid:
             self.__finish_thread_by_tid[tid].join()
+            print(f"[{tid}:TID] joined")
         
         self.__epoll.close()
         self.__send_fileno_queue.put_nowait(None)
@@ -130,8 +122,7 @@ class Server(abstract.ServerBase):
             sending_buffer = self.__sending_buffer_by_fileno.pop(fileno)
         except KeyError:
             pass
-        
-        print(f"[{fileno:2}] Try Close. send buffer remain:{len(sending_buffer)} bytes. queue remain:{len_send_buffer_queue}")
+        print(f"{datetime.now()} [{fileno:2}] [{threading.get_ident()}] Try Close. send buffer remain:{len(sending_buffer)} bytes. queue remain:{len_send_buffer_queue}")
         
         if send_buffer_queue:
             while not send_buffer_queue.empty():
@@ -141,21 +132,19 @@ class Server(abstract.ServerBase):
             try:
                 client_socket.shutdown(socket.SHUT_RDWR)
             except ConnectionResetError:
-                pass
+                print(f"{datetime.now()} [{fileno:2}] [{threading.get_ident()}] ConnectionResetError")
+                
             except BrokenPipeError:
-                print(f"[{fileno:2}] BrokenPipeError")
-                pass
+                print(f"{datetime.now()} [{fileno:2}] [{threading.get_ident()}] BrokenPipeError")
+                
             except OSError as e:
                 if e.errno == errno.ENOTCONN: # errno 107
-                    print(f"[{fileno:2}] ENOTCONN")
-                    pass
+                    print(f"{datetime.now()} [{fileno:2}] [{threading.get_ident()}] ENOTCONN")
                 else:
                     raise e
-            except Exception as e:
-                print(e, traceback.format_exc())
+            
             client_socket.close()
-        
-        print(f'[{fileno:2}] Closed')
+        print(f"{datetime.now()} [{fileno:2}] [{threading.get_ident()}] Closed.")
 
     def recv(self):
         return self.__recv_queue.get()
@@ -181,31 +170,24 @@ class Server(abstract.ServerBase):
                             client_socket, address = self.__listen_socket.accept()
                             client_socket_fileno = client_socket.fileno()
                             client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                            res = client_socket.getsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY)
-                            print(f"[{client_socket_fileno:2}] TCP_NODELAY : {res}")
-                            res = client_socket.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
-                            print(f"[{client_socket_fileno:2}] SO_RCVBUF : {res}")
-                            res = client_socket.getsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF)
-                            print(f"[{client_socket_fileno:2}] SO_SNDBUF : {res}")
                             
                             client_socket.setblocking(False)
                             
-                            accepting_text = f"[{client_socket_fileno:2}] accept {address[0]}:{address[1]}"
-                            exist_client_socket = self.__socket_by_fileno.get(client_socket_fileno)
-                            if exist_client_socket:
-                                try:
-                                    exist_client_socket.shutdown(socket.SHUT_RDWR)
-                                    accepting_text += "exist shutdown,"
-                                except OSError as e:
-                                    if e.errno == errno.ENOTCONN: # errno 107
-                                        pass
-                                    else:
-                                        raise e
-                                exist_client_socket.close()
-                                try:
-                                    self.__epoll.unregister(client_socket)
-                                except Exception as e:
-                                    print(e)
+                            # exist_client_socket = self.__socket_by_fileno.get(client_socket_fileno)
+                            # if exist_client_socket:
+                            #     try:
+                            #         exist_client_socket.shutdown(socket.SHUT_RDWR)
+                            #         accepting_text += "exist shutdown,"
+                            #     except OSError as e:
+                            #         if e.errno == errno.ENOTCONN: # errno 107
+                            #             pass
+                            #         else:
+                            #             raise e
+                            #     exist_client_socket.close()
+                            #     try:
+                            #         self.__epoll.unregister(client_socket)
+                            #     except Exception as e:
+                            #         print(e)
                         
                             self.__socket_by_fileno.update({client_socket_fileno : client_socket})
                             self.__lock_by_fileno.update({client_socket_fileno : threading.Lock()})
@@ -213,8 +195,6 @@ class Server(abstract.ServerBase):
                             self.__sending_buffer_by_fileno.update({client_socket_fileno : b''})
                             
                             self.__epoll.register(client_socket, self.__recv_eventmask)    
-                            
-                            print(accepting_text)
                             
                     except BlockingIOError as e:
                         if e.errno == socket.EAGAIN:
@@ -232,7 +212,6 @@ class Server(abstract.ServerBase):
             with self.__acquire_timeout(lock, 0.1) as acqiured:
                 client_socket = self.__socket_by_fileno.get(detect_fileno)
                 if acqiured:
-                    # text_print = f"{datetime.now()} [{detect_fileno:2}] [{threading.get_ident()}] recv "
                     recv_bytes = b''
                     try:
                         while True:
@@ -254,13 +233,11 @@ class Server(abstract.ServerBase):
                             "data": recv_bytes
                         })
                 else:
-                    print(f"{datetime.now()} [{detect_fileno:2}] [{threading.get_ident()}] recv work timeout")
+                    print(f"{datetime.now()} [{detect_fileno:2}] [{threading.get_ident()}] recv wait timeout")
     
     def __epollout_work(self, detect_fileno:int):
         try:
-            # text_print = f"{datetime.now()} [{detect_fileno:2}] "
             with self.__acquire_timeout(self.__lock_by_fileno[detect_fileno], 0.1) as acqiured:
-                # text_print += f"[{threading.get_ident()}] send "
                 send_bytes = 0
                 if acqiured:
                     try:
@@ -282,40 +259,30 @@ class Server(abstract.ServerBase):
                     except queue.Empty:
                         pass
                 else:
-                    # text_print += "send work timeout "
-                    print("send work timeout ")
+                    print(f"{datetime.now()} [{detect_fileno:2}] [{threading.get_ident()}] send wait timeout ")
                     
-                # text_print += f"{send_bytes:7} bytes. "
-        
             if self.__sending_buffer_by_fileno[detect_fileno] != b'':
                 self.__epoll.modify(detect_fileno, self.__send_eventmask)
-                # text_print += f"retry;buffer remain:{len(self.__sending_buffer_by_fileno[detect_fileno])} queue remain:{len(self.__send_buffer_queue_by_fileno[detect_fileno].queue)}"
                 
             elif not self.__send_buffer_queue_by_fileno[detect_fileno].empty():
                 self.__epoll.modify(detect_fileno, self.__send_eventmask)
-                # text_print += f"retry;buffer remain:{len(self.__sending_buffer_by_fileno[detect_fileno])} queue remain:{len(self.__send_buffer_queue_by_fileno[detect_fileno].queue)}"
                 
             else:
                 self.__epoll.modify(detect_fileno, self.__recv_eventmask)
-                # text_print += f"to recv"
                 
-            # print(text_print)
-            
         except Exception as e:
             print(e, traceback.format_exc())
     
     def __epoll_thread_function(self):
         try:
             tid = threading.get_ident()
-            print(f"{datetime.now()} [{tid}:TID] Finish Epoll Work")
+            print(f"{datetime.now()} [{tid}:TID] Start Epoll Work")
             while self.__is_running.value:
                 events = self.__epoll.poll()
                 for detect_fileno, detect_event in events:
                     if detect_fileno == self.__listen_socket.fileno():
                         if detect_event & (select.EPOLLHUP | select.EPOLLRDHUP):
-                            # self.__listen_socket = self.__get_listener(self.__listen_ip, self.__listen_port, self.__backlog)
                             print(f"{datetime.now()} [{detect_fileno:2}] [{threading.get_ident()}] Listener HUP")
-                            pass
                             
                         elif detect_event & select.EPOLLIN:
                             self.__epoll_accepting(detect_fileno)
@@ -327,7 +294,7 @@ class Server(abstract.ServerBase):
                         if tid in self.__running_thread_by_tid:
                             self.__finish_thread_by_tid[tid] = self.__running_thread_by_tid.pop(tid)
                         else:
-                            print(f'unknown thread {tid} - this is impossible')
+                            # f'unknown thread {tid} - this is impossible'
                             _tid, runnning_thread = self.__running_thread_by_tid.popitem()
                             self.__finish_thread_by_tid[_tid] = runnning_thread
                             
