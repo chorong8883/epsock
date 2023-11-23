@@ -236,42 +236,35 @@ class Server(abstract.ServerBase):
                     print(f"{datetime.now()} [{detect_fileno:2}] [{threading.get_ident()}] recv wait timeout")
     
     def __epollout_work(self, detect_fileno:int):
-        try:
-            with self.__acquire_timeout(self.__lock_by_fileno[detect_fileno], 0.1) as acqiured:
-                send_bytes = 0
-                if acqiured:
-                    try:
-                        while True:
-                            if self.__sending_buffer_by_fileno[detect_fileno] == b'':
-                                self.__sending_buffer_by_fileno[detect_fileno] = self.__send_buffer_queue_by_fileno[detect_fileno].get_nowait()                                
-                            send_length = self.__socket_by_fileno[detect_fileno].send(self.__sending_buffer_by_fileno[detect_fileno])
-                            if send_length <= 0:
-                                break
-                            send_bytes += send_length
-                            self.__sending_buffer_by_fileno[detect_fileno] = self.__sending_buffer_by_fileno[detect_fileno][send_length:]
-                    except BlockingIOError as e:
-                        if e.errno == socket.EAGAIN:
-                            pass
-                        else:
-                            raise e
-                    except BrokenPipeError:
+        with self.__acquire_timeout(self.__lock_by_fileno[detect_fileno], 0.1) as acqiured:
+            send_bytes = 0
+            if acqiured:
+                try:
+                    while True:
+                        if self.__sending_buffer_by_fileno[detect_fileno] == b'':
+                            self.__sending_buffer_by_fileno[detect_fileno] = self.__send_buffer_queue_by_fileno[detect_fileno].get_nowait()                                
+                        send_length = self.__socket_by_fileno[detect_fileno].send(self.__sending_buffer_by_fileno[detect_fileno])
+                        if send_length <= 0:
+                            break
+                        send_bytes += send_length
+                        self.__sending_buffer_by_fileno[detect_fileno] = self.__sending_buffer_by_fileno[detect_fileno][send_length:]
+                except BlockingIOError as e:
+                    if e.errno == socket.EAGAIN:
                         pass
-                    except queue.Empty:
-                        pass
-                    
-                    if self.__sending_buffer_by_fileno[detect_fileno] != b'':
-                        self.__epoll.modify(detect_fileno, self.__send_eventmask)
-                    elif not self.__send_buffer_queue_by_fileno[detect_fileno].empty():
-                        self.__epoll.modify(detect_fileno, self.__send_eventmask)
                     else:
-                        self.__epoll.modify(detect_fileno, self.__recv_eventmask)
-                else:
-                    print(f"{datetime.now()} [{detect_fileno:2}] [{threading.get_ident()}] send wait timeout ")
-                    
+                        raise e
+                except queue.Empty:
+                    pass
                 
-        except Exception as e:
-            print(e, traceback.format_exc())
-    
+                if self.__sending_buffer_by_fileno[detect_fileno] != b'':
+                    self.__epoll.modify(detect_fileno, self.__send_eventmask)
+                elif not self.__send_buffer_queue_by_fileno[detect_fileno].empty():
+                    self.__epoll.modify(detect_fileno, self.__send_eventmask)
+                else:
+                    self.__epoll.modify(detect_fileno, self.__recv_eventmask)
+            else:
+                print(f"{datetime.now()} [{detect_fileno:2}] [{threading.get_ident()}] send wait timeout ")
+
     def __epoll_thread_function(self):
         try:
             tid = threading.get_ident()
@@ -287,7 +280,7 @@ class Server(abstract.ServerBase):
                             self.__epoll_accepting(detect_fileno)
                         
                         else:
-                            print(f"{datetime.now()} [{detect_fileno:2}] [{threading.get_ident()}] accept", detect_fileno, detect_event)
+                            print(f"{datetime.now()} [{detect_fileno:2}] [{threading.get_ident()}] Accept")
                     
                     elif detect_fileno == self.__close_event_listener.fileno():
                         if tid in self.__running_thread_by_tid:
@@ -301,22 +294,28 @@ class Server(abstract.ServerBase):
                             self.__close_event.send(b'close')
                             
                     elif detect_fileno in self.__socket_by_fileno:
-                        if detect_event & (select.EPOLLHUP | select.EPOLLRDHUP):
-                            try:
-                                self.__epoll.unregister(detect_fileno)
-                                self.close_client(detect_fileno)
-                            except Exception as e:
-                                print(detect_fileno, e, traceback.format_exc())
-                        
-                        elif detect_event & select.EPOLLOUT:
-                            self.__epollout_work(detect_fileno)
-                            
-                        elif detect_event & select.EPOLLIN:
-                            self.__epollin_work(detect_fileno)
-                        else:
-                            print("unknown event", detect_fileno, detect_event)
+                        try:
+                            if detect_event & (select.EPOLLHUP | select.EPOLLRDHUP):
+                                try:
+                                    self.__epoll.unregister(detect_fileno)
+                                    self.close_client(detect_fileno)
+                                except FileNotFoundError:
+                                    print(f"{datetime.now()} [{detect_fileno:2}] [{threading.get_ident()}] FileNotFoundError")
+                                    
+                            elif detect_event & select.EPOLLOUT:
+                                self.__epollout_work(detect_fileno)
+                                
+                            elif detect_event & select.EPOLLIN:
+                                self.__epollin_work(detect_fileno)
+                            else:
+                                print(f"{datetime.now()} [{detect_fileno:2}] [{threading.get_ident()}] Unknown Event. {detect_event:#06x}")
+                        except BrokenPipeError:
+                            print(f"{datetime.now()} [{detect_fileno:2}] [{threading.get_ident()}] BrokenPipeError")
+                        except ConnectionResetError:
+                            print(f"{datetime.now()} [{detect_fileno:2}] [{threading.get_ident()}] ConnectionResetError")
                     else:
-                        print("unknown detection", detect_fileno, detect_event)
+                        print(f"{datetime.now()} [{detect_fileno:2}] [{threading.get_ident()}] Unknown Detection. {detect_event:#06x}")
+                        
         except Exception as e:
             print(e, traceback.format_exc())
         
