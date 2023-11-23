@@ -150,8 +150,19 @@ class Server(abstract.ServerBase):
         return self.__recv_queue.get()
     
     def send(self, send_fileno:int, data:bytes = None):
-        self.__send_buffer_queue_by_fileno[send_fileno].put_nowait(data)
-        self.__epoll.modify(send_fileno, self.__send_eventmask)
+        try:
+            self.__send_buffer_queue_by_fileno[send_fileno].put_nowait(data)
+        except KeyError:
+            # removed
+            pass
+        try:
+            self.__epoll.modify(send_fileno, self.__send_eventmask)
+        except OSError as e:
+            if e.errno == errno.EBADFD:
+                print("e.errno == errno.EBADFD")
+                pass
+            else:
+                raise e
             
 #####################################################################################################################
 #####################################################################################################################

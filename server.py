@@ -61,15 +61,18 @@ def recv_threading():
                 break
             
             if is_start and is_len and is_closer:
-                recv_bytes:bytes = recv_data[fileno][start_index:end_index]
-                recv_data[fileno] = recv_data[fileno][end_index+len(closer):]
+                recv_bytes:bytes = recv_data[fileno][:end_index+len(closer)]
                 server.send(fileno, recv_bytes)
+                
+                # recv_message_bytes:bytes = recv_data[fileno][start_index:end_index]
                 # end = time.time()
                 
                 # recv_bytes_replaced = recv_bytes.replace(b'abcdefghijklmnop qrstuvwxyz', b'')
                 
                 # text_print = f'[{fileno:2}][{count[fileno]:5}] recv {len(recv_bytes):7} bytes. over:{len(recv_data[fileno]):8} time elapsed: {math.floor((end - time_recv_data[fileno])*100000)/100000:.5f} replace:{recv_bytes_replaced}'
                 # print(text_print)
+                
+                recv_data[fileno] = recv_data[fileno][end_index+len(closer):]
             else:
                 count[fileno] += 1
                 
