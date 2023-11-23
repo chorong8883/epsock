@@ -258,17 +258,16 @@ class Server(abstract.ServerBase):
                         pass
                     except queue.Empty:
                         pass
+                    
+                    if self.__sending_buffer_by_fileno[detect_fileno] != b'':
+                        self.__epoll.modify(detect_fileno, self.__send_eventmask)
+                    elif not self.__send_buffer_queue_by_fileno[detect_fileno].empty():
+                        self.__epoll.modify(detect_fileno, self.__send_eventmask)
+                    else:
+                        self.__epoll.modify(detect_fileno, self.__recv_eventmask)
                 else:
                     print(f"{datetime.now()} [{detect_fileno:2}] [{threading.get_ident()}] send wait timeout ")
                     
-            if self.__sending_buffer_by_fileno[detect_fileno] != b'':
-                self.__epoll.modify(detect_fileno, self.__send_eventmask)
-                
-            elif not self.__send_buffer_queue_by_fileno[detect_fileno].empty():
-                self.__epoll.modify(detect_fileno, self.__send_eventmask)
-                
-            else:
-                self.__epoll.modify(detect_fileno, self.__recv_eventmask)
                 
         except Exception as e:
             print(e, traceback.format_exc())
