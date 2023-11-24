@@ -164,14 +164,22 @@ def kqueueing():
                                 else:
                                     count[event.ident] = 1
                                     
-                                # recv_bytes:bytes = recv_data[fileno][start_index:end_index]
+                                recv_bytes:bytes = recv_data[fileno][:end_index+len(closer)]
                                 recv_data[fileno] = recv_data[fileno][end_index+len(closer):]
                                 # print(f"[{fileno}] {len(recv_bytes)} {recv_bytes[:10]}...{recv_bytes[-10:]}")
                                 try:
-                                    if 20 <= count[event.ident]:
-                                        print(f"[{fileno}] Try Close. count:{count[event.ident]}")
+                                    if 20 == count[event.ident]:
+                                        print(f"[{fileno:2}] [{count[event.ident]:2}] recv {len(recv_bytes):,} bytes. End. Try Close")
                                         client : iosock.Client = clients.get(fileno)
                                         client.shutdown()
+                                    elif 20 < count[event.ident]:
+                                        print(f"[{fileno:2}] [{count[event.ident]:2}] Try Close Warning Count")
+                                        client : iosock.Client = clients.get(fileno)
+                                        client.shutdown()
+                                    else:
+                                        print(f"[{fileno:2}] [{count[event.ident]:2}] recv {len(recv_bytes):,} bytes")
+                                        
+                                        
                                 except KeyError:
                                     pass
                 else:
@@ -221,13 +229,16 @@ if __name__ == '__main__':
         client_filenos = list(clients.keys())
         
         for client_fileno in client_filenos:
-            for send_count_index in range(send_count):
+            send_count_index = 0
+            for _ in range(send_count):
                 if not is_running.value:
                     break
                 clients[client_fileno].sendall(packed_send_bytes)
                 clients[client_fileno].sendall(packed_send_bytes2)
-                print(f"[{send_count_index}] send [{client_fileno}] {len(packed_send_bytes):,} bytes")
-                print(f"[{send_count_index}] send [{client_fileno}] {len(packed_send_bytes2):,} bytes")
+                print(f"[{client_fileno:2}] [{send_count_index:2}] send {len(packed_send_bytes):,} bytes")
+                send_count_index += 1
+                print(f"[{client_fileno:2}] [{send_count_index:2}] send {len(packed_send_bytes2):,} bytes")
+                send_count_index += 1
             
         print("finish send")
 
