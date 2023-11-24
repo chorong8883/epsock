@@ -84,6 +84,7 @@ close_event, close_listener = socket.socketpair()
 def kqueueing():
     kq = select.kqueue()
     try:
+        print(type(kevents))
         count = collections.defaultdict(int)
         while is_running.value:
             revents = kq.control(list(kevents.values()), 1000)
@@ -106,11 +107,18 @@ def kqueueing():
                     
                 elif event.filter == select.KQ_FILTER_READ:
                     if event.flags & select.KQ_EV_EOF:
-                        print(f"[{event.ident}] event.flags & select.KQ_EV_EOF")
-                        kevents.pop(event.ident)
-                        client : iosock.Client = clients.pop(event.ident)
-                        client.close()
-                
+                        eof_message = f"[{event.ident}] event.flags & select.KQ_EV_EOF"
+                        if event.ident in kevents:
+                            eof_message += f" Pop Event({len(kevents)}->"
+                            e = kevents.pop(event.ident)
+                            eof_message += f"{len(kevents)})"
+                        if event.ident in clients:
+                            client : iosock.Client = clients.pop(event.ident)
+                            client.close()
+                            eof_message += f" {client.get_fileno()} closed"
+                        
+                        print(eof_message)
+                        
                     else:
                         client : iosock.Client = clients[event.ident]
                         data = b''
@@ -162,8 +170,8 @@ def kqueueing():
                                 try:
                                     if 20 <= count[event.ident]:
                                         print(f"[{fileno}] Try Close. count:{count[event.ident]}")
-                                        client : iosock.Client = clients.pop(fileno)
-                                        client.close()
+                                        client : iosock.Client = clients.get(fileno)
+                                        client.shutdown()
                                 except KeyError:
                                     pass
                 else:
@@ -189,9 +197,9 @@ if __name__ == '__main__':
         signal.signal(signal.SIGTERM, signal_handler)
         
         kevent_close = select.kevent(close_listener.fileno())
-        kevents[close_listener.fileno()] = kevent_close
+        kevents.update({close_listener.fileno() : kevent_close})
         kevent_update = select.kevent(update_listener.fileno())
-        kevents[update_listener.fileno()] = kevent_update
+        kevents.update({update_listener.fileno() : kevent_update})
         
         kqueueing_thread = threading.Thread(target=kqueueing)
         kqueueing_thread.start()
@@ -206,7 +214,7 @@ if __name__ == '__main__':
             locks[client_fileno] = threading.Lock()
             clients[client_fileno] = client
             kevent = select.kevent(client_fileno)
-            kevents[client_fileno] = kevent
+            kevents.update({client_fileno:kevent})
         
         update_event.send(b'update')
         

@@ -30,8 +30,8 @@ class Client(abstract.ClientBase):
         self.__client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.__client_socket.connect((ip, port))
         # self.__client_socket.setblocking(False)
-        
-    def close(self):
+    
+    def shutdown(self):
         if self.__client_socket:
             try:
                 self.__client_socket.shutdown(socket.SHUT_RDWR)
@@ -40,7 +40,9 @@ class Client(abstract.ClientBase):
                     pass
                 else:
                     raise e
-            self.__client_socket.close()
+        
+    def close(self):
+        self.__client_socket.close()
             
     def sendall(self, data:bytes):
         self.__client_socket.sendall(data)
