@@ -157,9 +157,15 @@ class Server(abstract.ServerBase):
             pass
         try:
             self.__epoll.modify(send_fileno, self.__send_eventmask)
+        except FileNotFoundError:
+            print("FileNotFoundError self.__epoll.modify(send_fileno, self.__send_eventmask)")
+            pass
         except OSError as e:
-            if e.errno == errno.EBADFD:
-                print("e.errno == errno.EBADFD")
+            if e.errno == errno.EBADF:
+                print("e.errno == errno.EBADF self.__epoll.modify(send_fileno, self.__send_eventmask)")
+                pass
+            elif e.errno == errno.EBADFD:
+                print("e.errno == errno.EBADFD self.__epoll.modify(send_fileno, self.__send_eventmask)")
                 pass
             else:
                 raise e
