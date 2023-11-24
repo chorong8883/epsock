@@ -93,7 +93,7 @@ if __name__ == '__main__':
     server.start('218.55.118.203', 59012, 1)
     print("Server Start.")
     
-    test_server.start('localhost', 60808, 1)
+    # test_server.start('localhost', 60808, 1)
     
     recv_thread = threading.Thread(target=recv_threading)
     recv_thread.start()

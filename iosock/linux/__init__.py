@@ -455,9 +455,11 @@ class RelayServer():
             
             inlistener = self.__listen('localhost', internal_port, backlog)
             inlistener_fileno = inlistener.fileno()
+            print(f"Listen 'localhost':{internal_port}")
             
             exlistener = self.__listen(listen_ip, external_port, backlog)
             exlistener_fileno = exlistener.fileno()
+            print(f"Listen {listen_ip}:{internal_port}")
             
             self.__inlistener_by_fileno.update({inlistener_fileno: inlistener})
             self.__exlistener_by_fileno.update({exlistener_fileno: exlistener})
