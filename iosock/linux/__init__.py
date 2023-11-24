@@ -48,6 +48,15 @@ class Server(abstract.ServerBase):
         finally:
             if result:
                 lock.release()
+    @contextmanager
+    def __acquire_blocking(self, lock:threading.Lock, blocking:bool):
+        result = lock.acquire(blocking=blocking)
+        try:
+            yield result
+        finally:
+            if result:
+                lock.release()
+
 
     def start(self, listen_ip:str, listen_port:int, count_thread:int, backlog:int = 5):
         self.__listen_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -175,7 +184,7 @@ class Server(abstract.ServerBase):
     def __epoll_accepting(self, detect_fileno:int):
         lock = self.__lock_by_fileno.get(detect_fileno)
         if lock:
-            with self.__acquire_timeout(lock, 0.1) as acquired:
+            with self.__acquire_blocking(lock, False) as acquired:
                 if acquired:
                     try:
                         while True:
@@ -221,9 +230,9 @@ class Server(abstract.ServerBase):
     def __epollin_work(self, detect_fileno:int):
         lock = self.__lock_by_fileno.get(detect_fileno)
         if lock:
-            with self.__acquire_timeout(lock, 0.1) as acqiured:
-                client_socket = self.__socket_by_fileno.get(detect_fileno)
+            with self.__acquire_blocking(lock, False) as acqiured:
                 if acqiured:
+                    client_socket = self.__socket_by_fileno.get(detect_fileno)
                     recv_bytes = b''
                     try:
                         while True:
@@ -248,34 +257,36 @@ class Server(abstract.ServerBase):
                     print(f"{datetime.now()} [{detect_fileno:2}] [{threading.get_ident()}] recv wait timeout")
     
     def __epollout_work(self, detect_fileno:int):
-        with self.__acquire_timeout(self.__lock_by_fileno[detect_fileno], 0.1) as acqiured:
-            send_bytes = 0
-            if acqiured:
-                try:
-                    while True:
-                        if self.__sending_buffer_by_fileno[detect_fileno] == b'':
-                            self.__sending_buffer_by_fileno[detect_fileno] = self.__send_buffer_queue_by_fileno[detect_fileno].get_nowait()                                
-                        send_length = self.__socket_by_fileno[detect_fileno].send(self.__sending_buffer_by_fileno[detect_fileno])
-                        if send_length <= 0:
-                            break
-                        send_bytes += send_length
-                        self.__sending_buffer_by_fileno[detect_fileno] = self.__sending_buffer_by_fileno[detect_fileno][send_length:]
-                except BlockingIOError as e:
-                    if e.errno == socket.EAGAIN:
+        lock = self.__lock_by_fileno.get(detect_fileno)
+        if lock:
+            with self.__acquire_blocking(lock, False) as acqiured:
+                send_bytes = 0
+                if acqiured:
+                    try:
+                        while True:
+                            if self.__sending_buffer_by_fileno[detect_fileno] == b'':
+                                self.__sending_buffer_by_fileno[detect_fileno] = self.__send_buffer_queue_by_fileno[detect_fileno].get_nowait()                                
+                            send_length = self.__socket_by_fileno[detect_fileno].send(self.__sending_buffer_by_fileno[detect_fileno])
+                            if send_length <= 0:
+                                break
+                            send_bytes += send_length
+                            self.__sending_buffer_by_fileno[detect_fileno] = self.__sending_buffer_by_fileno[detect_fileno][send_length:]
+                    except BlockingIOError as e:
+                        if e.errno == socket.EAGAIN:
+                            pass
+                        else:
+                            raise e
+                    except queue.Empty:
                         pass
+                    
+                    if self.__sending_buffer_by_fileno[detect_fileno] != b'':
+                        self.__epoll.modify(detect_fileno, self.__send_eventmask)
+                    elif not self.__send_buffer_queue_by_fileno[detect_fileno].empty():
+                        self.__epoll.modify(detect_fileno, self.__send_eventmask)
                     else:
-                        raise e
-                except queue.Empty:
-                    pass
-                
-                if self.__sending_buffer_by_fileno[detect_fileno] != b'':
-                    self.__epoll.modify(detect_fileno, self.__send_eventmask)
-                elif not self.__send_buffer_queue_by_fileno[detect_fileno].empty():
-                    self.__epoll.modify(detect_fileno, self.__send_eventmask)
+                        self.__epoll.modify(detect_fileno, self.__recv_eventmask)
                 else:
-                    self.__epoll.modify(detect_fileno, self.__recv_eventmask)
-            else:
-                print(f"{datetime.now()} [{detect_fileno:2}] [{threading.get_ident()}] send wait timeout ")
+                    print(f"{datetime.now()} [{detect_fileno:2}] [{threading.get_ident()}] send lock block False ")
 
     def __epoll_thread_function(self):
         try:
@@ -399,7 +410,15 @@ class RelayServer():
         finally:
             if result:
                 lock.release()
-    
+    @contextmanager
+    def __acquire_blocking(self, lock:threading.Lock, blocking:bool):
+        result = lock.acquire(blocking=blocking)
+        try:
+            yield result
+        finally:
+            if result:
+                lock.release()
+
     def __listen(self, listen_ip:str, listen_port:int, backlog:int) -> socket.socket:
         listen_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -521,7 +540,7 @@ class RelayServer():
     def __epoll_accepting(self, detect_fileno):
         lock = self.__lock_by_fileno.get(detect_fileno)
         if lock:
-            with self.__acquire_timeout(lock, 0.1) as acquired:
+            with self.__acquire_blocking(lock, False) as acquired:
                 if acquired:
                     try:
                         while True:
@@ -570,34 +589,36 @@ class RelayServer():
             return None
         
     def __epollout_work(self, detect_fileno:int):
-        with self.__acquire_timeout(self.__lock_by_fileno[detect_fileno], 0.1) as acqiured:
-            send_bytes = 0
-            if acqiured:
-                try:
-                    while True:
-                        if self.__sending_buffer_by_fileno[detect_fileno] == b'':
-                            self.__sending_buffer_by_fileno[detect_fileno] = self.__send_buffer_queue_by_fileno[detect_fileno].get_nowait()                                
-                        send_length = self.__socket_by_fileno[detect_fileno].send(self.__sending_buffer_by_fileno[detect_fileno])
-                        if send_length <= 0:
-                            break
-                        send_bytes += send_length
-                        self.__sending_buffer_by_fileno[detect_fileno] = self.__sending_buffer_by_fileno[detect_fileno][send_length:]
-                except BlockingIOError as e:
-                    if e.errno == socket.EAGAIN:
+        lock = self.__lock_by_fileno.get(detect_fileno)
+        if lock:
+            with self.__acquire_blocking(lock, False) as acquired:
+                if acquired:
+                    send_bytes = 0
+                    try:
+                        while True:
+                            if self.__sending_buffer_by_fileno[detect_fileno] == b'':
+                                self.__sending_buffer_by_fileno[detect_fileno] = self.__send_buffer_queue_by_fileno[detect_fileno].get_nowait()                                
+                            send_length = self.__socket_by_fileno[detect_fileno].send(self.__sending_buffer_by_fileno[detect_fileno])
+                            if send_length <= 0:
+                                break
+                            send_bytes += send_length
+                            self.__sending_buffer_by_fileno[detect_fileno] = self.__sending_buffer_by_fileno[detect_fileno][send_length:]
+                    except BlockingIOError as e:
+                        if e.errno == socket.EAGAIN:
+                            pass
+                        else:
+                            raise e
+                    except queue.Empty:
                         pass
+                    
+                    if self.__sending_buffer_by_fileno[detect_fileno] != b'':
+                        self.__epoll.modify(detect_fileno, self.__send_eventmask)
+                    elif not self.__send_buffer_queue_by_fileno[detect_fileno].empty():
+                        self.__epoll.modify(detect_fileno, self.__send_eventmask)
                     else:
-                        raise e
-                except queue.Empty:
-                    pass
-                
-                if self.__sending_buffer_by_fileno[detect_fileno] != b'':
-                    self.__epoll.modify(detect_fileno, self.__send_eventmask)
-                elif not self.__send_buffer_queue_by_fileno[detect_fileno].empty():
-                    self.__epoll.modify(detect_fileno, self.__send_eventmask)
+                        self.__epoll.modify(detect_fileno, self.__recv_eventmask)
                 else:
-                    self.__epoll.modify(detect_fileno, self.__recv_eventmask)
-            else:
-                print(f"{datetime.now()} [{detect_fileno:2}] [{threading.get_ident()}] send wait timeout ")
+                    print(f"{datetime.now()} [{detect_fileno:2}] [{threading.get_ident()}] send lock False ")
         
     def __put_send(self, send_fileno:int, data:bytes = None):
         try:
@@ -620,39 +641,47 @@ class RelayServer():
                 raise e
             
     def __epollin_from_external(self, detect_fileno):
-        exsocket = self.__exsocket_by_fileno.get(detect_fileno)
-        recv_bytes = b''
-        try:
-            while True:
-                temp_recv_bytes = exsocket.recv(self.__buffer_size)
-                if temp_recv_bytes == None or temp_recv_bytes == -1 or temp_recv_bytes == b'':
-                    break
-                else:
-                    recv_bytes += temp_recv_bytes
-            
-        except BlockingIOError as e:
-            if e.errno == socket.EAGAIN:
-                pass
-            else:
-                raise e
-        send_data = {
-            'fileno' : detect_fileno,
-            'data' : str(recv_bytes)
-        }
-        send_str = json.dumps(send_data)
-        send_bytes = send_str.encode()
-        insocket = self.__get_insocket_by_exsocket(detect_fileno)
-        if insocket:
-            self.__put_send(insocket.fileno(), send_bytes)
+        lock = self.__lock_by_fileno.get(detect_fileno)
+        if lock:
+            with self.__acquire_blocking(lock, False) as acquired:
+                if acquired:
+                    exsocket = self.__exsocket_by_fileno.get(detect_fileno)
+                    recv_bytes = b''
+                    try:
+                        while True:
+                            temp_recv_bytes = exsocket.recv(self.__buffer_size)
+                            if temp_recv_bytes == None or temp_recv_bytes == -1 or temp_recv_bytes == b'':
+                                break
+                            else:
+                                recv_bytes += temp_recv_bytes
+                        
+                    except BlockingIOError as e:
+                        if e.errno == socket.EAGAIN:
+                            pass
+                        else:
+                            raise e
+                    send_data = {
+                        'fileno' : detect_fileno,
+                        'data' : str(recv_bytes)
+                    }
+                    send_str = json.dumps(send_data)
+                    send_bytes = send_str.encode()
+                    insocket = self.__get_insocket_by_exsocket(detect_fileno)
+                    if insocket:
+                        self.__put_send(insocket.fileno(), send_bytes)
     
     def __epollin_from_internal(self, detect_fileno):
-        insocket = self.__insocket_by_fileno.get(detect_fileno)
-        recv_bytes = insocket.recv(self.__buffer_size)
-        recv_data = json.loads(recv_bytes)
-        exfileno = recv_data['fileno']
-        exsocket = self.__exsocket_by_fileno.get(exfileno)
-        if exsocket:
-            self.__put_send(exsocket.fileno(), recv_bytes)
+        lock = self.__lock_by_fileno.get(detect_fileno)
+        if lock:
+            with self.__acquire_blocking(lock, False) as acqiured:
+                if acqiured:
+                    insocket = self.__insocket_by_fileno.get(detect_fileno)
+                    recv_bytes = insocket.recv(self.__buffer_size)
+                    recv_data = json.loads(recv_bytes)
+                    exfileno = recv_data['fileno']
+                    exsocket = self.__exsocket_by_fileno.get(exfileno)
+                    if exsocket:
+                        self.__put_send(exsocket.fileno(), recv_bytes)
     
     def __epoll_thread_function(self):
         try:
