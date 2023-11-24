@@ -15,6 +15,9 @@ class Client:
     def connect(self, ip:str, port:int):
         self.client.connect(ip, port)
     
+    def shutdown(self):
+        self.client.shutdown()
+    
     def close(self):
         self.client.close()
     
