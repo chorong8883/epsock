@@ -76,10 +76,13 @@ def recv_threading():
                 recv_data[fileno] = recv_data[fileno][end_index+len(closer):]
             else:
                 count[fileno] += 1
-                
+
+test_server = iosock.Server()
+
 def signal_handler(num_recv_signal, frame):
     print(f"\nGet Signal: {signal.Signals(num_recv_signal).name}")
     server.close()
+    test_server.close()
     print("Server Close.")
 
 if __name__ == '__main__':
@@ -89,6 +92,8 @@ if __name__ == '__main__':
 
     server.start('218.55.118.203', 59012, 1)
     print("Server Start.")
+    
+    test_server.start('localhost', 60808, 1)
     
     recv_thread = threading.Thread(target=recv_threading)
     recv_thread.start()

@@ -59,3 +59,20 @@ class Server:
     
     def recv(self):
         return self.server.recv()
+    
+class RelayServer:
+    def __init__(self) -> None:
+        from . import linux
+        self.server = linux.RelayServer()
+        
+    def listen(self, listen_ip:str, external_port:int, internal_port:int, backlog:int = 5):
+        self.server.listen(listen_ip, external_port, internal_port, backlog)
+        
+    def start(self, count_thread:int = 1):
+        self.server.start(count_thread)
+    
+    def close(self):
+        self.server.close()
+        
+    def join(self):
+        self.server.join()
