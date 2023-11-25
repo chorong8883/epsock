@@ -51,11 +51,14 @@ class Server:
         elif system == "Windows":
             print("Server Windows")
 
-    def start(self, listen_ip:str, listen_port:int, count_thread:int = 1, backlog:int = 5):
-        self.server.start(listen_ip, listen_port, count_thread, backlog)
+    def start(self, listen_ip:str, listen_port:int, count_thread:int = 1, backlog:int = 5, recv_callback=None):
+        self.server.start(listen_ip, listen_port, count_thread, backlog, recv_callback)
     
     def close(self):
         self.server.close()
+    
+    def join(self):
+        self.server.join()
     
     def send(self, fileno:int, data:bytes):
         self.server.send(fileno, data)

@@ -37,8 +37,11 @@ class Server(abstract.ServerBase):
         self.__recv_queue = queue.Queue()
         self.__send_fileno_queue = queue.Queue()
         
+        self.__listener_eventmask = select.EPOLLIN | select.EPOLLPRI | select.EPOLLHUP | select.EPOLLRDHUP | select.EPOLLET
+        self.__hup_eventmask = select.EPOLLHUP | select.EPOLLRDHUP | select.EPOLLET
         self.__recv_eventmask = select.EPOLLIN | select.EPOLLPRI | select.EPOLLHUP | select.EPOLLRDHUP | select.EPOLLET
         self.__send_eventmask = select.EPOLLIN | select.EPOLLPRI | select.EPOLLOUT | select.EPOLLHUP | select.EPOLLRDHUP | select.EPOLLET
+        self.__closer_eventmask = select.EPOLLIN | select.EPOLLPRI | select.EPOLLHUP | select.EPOLLRDHUP
         
     @contextmanager
     def __acquire_timeout(self, lock:threading.Lock, timeout:float):
@@ -57,11 +60,11 @@ class Server(abstract.ServerBase):
             if result:
                 lock.release()
 
-
-    def start(self, listen_ip:str, listen_port:int, count_thread:int, backlog:int = 5):
+    def start(self, listen_ip:str, listen_port:int, count_thread:int, backlog:int = 5, recv_callback=None):
+        self.__recv_callback = recv_callback
         self.__listen_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.__listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        # self.__listen_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1) 
+        # self.__listen_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1) # Nagle's
         
         recv_buf_size = self.__listen_socket.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
         send_buf_size = self.__listen_socket.getsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF)
@@ -79,7 +82,6 @@ class Server(abstract.ServerBase):
         self.__sending_buffer_by_fileno.update({listen_socket_fileno : b''})
         
         self.__epoll = select.epoll()
-        self.__listener_eventmask = select.EPOLLIN | select.EPOLLPRI | select.EPOLLHUP | select.EPOLLRDHUP
         self.__epoll.register(self.__listen_socket, self.__listener_eventmask)
         
         self.__is_running.value = True
@@ -90,25 +92,23 @@ class Server(abstract.ServerBase):
             self.__running_thread_by_tid[et.ident] = et
             
         self.__close_event, self.__close_event_listener = socket.socketpair()
-        self.__closer_eventmask = select.EPOLLIN | select.EPOLLPRI | select.EPOLLHUP | select.EPOLLRDHUP
         self.__epoll.register(self.__close_event_listener, self.__closer_eventmask)
-            
-    def close(self):
-        self.__is_running.value = False
-        self.__close_event.send(b'close')
+    
+    def join(self):
+        tids = list(self.__running_thread_by_tid.keys())
+        for tid in tids:
+            if tid in self.__running_thread_by_tid:
+                print(f"[{tid}:TID] running join")
+                self.__running_thread_by_tid[tid].join()
+                print(f"[{tid}:TID] running joined")
         
         for tid in self.__finish_thread_by_tid:
             self.__finish_thread_by_tid[tid].join()
             print(f"[{tid}:TID] joined")
         
-        self.__epoll.close()
-        self.__send_fileno_queue.put_nowait(None)
-        self.__recv_queue.put_nowait(None)
-        
-        client_fileno_list = list(self.__socket_by_fileno.keys())
-        for fileno in client_fileno_list:
-            self.close_client(fileno)
-
+    def close(self):
+        self.__is_running.value = False
+        self.__close_event.send(b'close')
         
     def close_client(self, fileno:int):
         try:
@@ -179,16 +179,18 @@ class Server(abstract.ServerBase):
                 pass
             else:
                 raise e
-            
-            
+    
     def __epoll_accepting(self, detect_fileno:int):
         lock = self.__lock_by_fileno.get(detect_fileno)
         if lock:
             with self.__acquire_blocking(lock, False) as acquired:
                 if acquired:
+                    self.__epoll.modify(self.__listen_socket, self.__hup_eventmask)
+                    # print(f"{datetime.now()} [{detect_fileno:2}] [{threading.get_ident()}] accept lock acqiured")
                     try:
                         while True:
                             client_socket, address = self.__listen_socket.accept()
+                            print(f"{datetime.now()} [{client_socket.fileno():2}] [{threading.get_ident()}] accept {address}")
                             client_socket_fileno = client_socket.fileno()
                             client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                             
@@ -222,8 +224,10 @@ class Server(abstract.ServerBase):
                             pass
                         else:
                             raise e
-                else:
                     self.__epoll.modify(self.__listen_socket, self.__listener_eventmask)
+                #     print(f"{datetime.now()} [{detect_fileno:2}] [{threading.get_ident()}] listener modify")
+                # else:
+                #     print(f"{datetime.now()} [{detect_fileno:2}] [{threading.get_ident()}] accept lock false")
                         
         
             
@@ -232,12 +236,15 @@ class Server(abstract.ServerBase):
         if lock:
             with self.__acquire_blocking(lock, False) as acqiured:
                 if acqiured:
+                    self.__epoll.modify(detect_fileno, self.__hup_eventmask)
+                    # print(f"{datetime.now()} [{detect_fileno:2}] [{threading.get_ident()}] recv lock acqiured")
                     client_socket = self.__socket_by_fileno.get(detect_fileno)
                     recv_bytes = b''
                     try:
                         while True:
                             temp_recv_bytes = client_socket.recv(self.__buffer_size)
                             if temp_recv_bytes == None or temp_recv_bytes == -1 or temp_recv_bytes == b'':
+                                # print(f"{datetime.now()} [{detect_fileno:2}] [{threading.get_ident()}] recv break")
                                 break
                             else:
                                 recv_bytes += temp_recv_bytes
@@ -248,20 +255,28 @@ class Server(abstract.ServerBase):
                         else:
                             raise e
                         
+                    self.__epoll.modify(detect_fileno, self.__recv_eventmask)
+                    # print(f"{datetime.now()} [{detect_fileno:2}] [{threading.get_ident()}] recv modify")
+                        
                     if recv_bytes:
-                        self.__recv_queue.put_nowait({
-                            "fileno": detect_fileno,
-                            "data": recv_bytes
-                        })
-                else:
-                    print(f"{datetime.now()} [{detect_fileno:2}] [{threading.get_ident()}] recv wait timeout")
+                        if self.__recv_callback:
+                            self.__recv_callback(detect_fileno, recv_bytes)
+                        else:   
+                            self.__recv_queue.put_nowait({
+                                "fileno": detect_fileno,
+                                "data": recv_bytes
+                            })
+                # else:
+                #     print(f"{datetime.now()} [{detect_fileno:2}] [{threading.get_ident()}] recv lock false")
     
     def __epollout_work(self, detect_fileno:int):
         lock = self.__lock_by_fileno.get(detect_fileno)
         if lock:
             with self.__acquire_blocking(lock, False) as acqiured:
-                send_bytes = 0
                 if acqiured:
+                    self.__epoll.modify(detect_fileno, self.__hup_eventmask)
+                    # print(f"{datetime.now()} [{detect_fileno:2}] [{threading.get_ident()}] send lock acqiured")
+                    send_bytes = 0
                     try:
                         while True:
                             if self.__sending_buffer_by_fileno[detect_fileno] == b'':
@@ -285,8 +300,8 @@ class Server(abstract.ServerBase):
                         self.__epoll.modify(detect_fileno, self.__send_eventmask)
                     else:
                         self.__epoll.modify(detect_fileno, self.__recv_eventmask)
-                else:
-                    print(f"{datetime.now()} [{detect_fileno:2}] [{threading.get_ident()}] send lock block False ")
+                # else:
+                #     print(f"{datetime.now()} [{detect_fileno:2}] [{threading.get_ident()}] send lock False ")
 
     def __epoll_thread_function(self):
         try:
@@ -305,6 +320,12 @@ class Server(abstract.ServerBase):
                             
                         if 0 < len(self.__running_thread_by_tid):
                             self.__close_event.send(b'close')
+                        else:
+                            self.__epoll.close()
+                            client_fileno_list = list(self.__socket_by_fileno.keys())
+                            for fileno in client_fileno_list:
+                                self.close_client(fileno)
+                    
                             
                     elif detect_fileno == self.__listen_socket.fileno():
                         if detect_event & (select.EPOLLHUP | select.EPOLLRDHUP):
@@ -662,12 +683,18 @@ class RelayServer():
                             pass
                         else:
                             raise e
+                    
                     send_data = {
                         'fileno' : detect_fileno,
-                        'data' : str(recv_bytes)
+                        'data' : ""
                     }
                     send_str = json.dumps(send_data)
                     send_bytes = send_str.encode()
+                    print(f"[{threading.get_ident()}] {send_bytes}")
+                    
+                    send_bytes = send_bytes[:-2] + recv_bytes + send_bytes[-2:]
+                    print(send_bytes)
+                    
                     insocket = self.__get_insocket_by_exsocket(detect_fileno)
                     if insocket:
                         self.__put_send(insocket.fileno(), send_bytes)
