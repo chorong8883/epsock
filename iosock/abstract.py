@@ -22,14 +22,20 @@ class ClientBase(metaclass=abc.ABCMeta):
     
 class ServerBase(metaclass=abc.ABCMeta):
     @abstractmethod
-    def start(self): pass
+    def listen(self, ip:str, port:int, backlog:int): pass
     
+    @abstractmethod
+    def start(self, count_thread:int): pass
+        
     @abstractmethod
     def close(self): pass
     
     @abstractmethod
-    def send(self, data:bytes) -> int: pass
+    def join(self): pass
     
     @abstractmethod
-    def recv(self) -> bytes: pass
+    def send(self, data:bytes) -> int: pass
+    
+    # @abstractmethod
+    # def recv(self) -> bytes: pass
     

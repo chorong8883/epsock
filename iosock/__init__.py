@@ -51,8 +51,14 @@ class Server:
         elif system == "Windows":
             print("Server Windows")
 
-    def start(self, listen_ip:str, listen_port:int, count_thread:int = 1, backlog:int = 5, recv_callback=None):
-        self.server.start(listen_ip, listen_port, count_thread, backlog, recv_callback)
+    def listen(self, ip:str, port:int, backlog:int = 5):
+        self.server.listen(ip, port, backlog)
+    
+    def unlisten(self, ip:str, port:int):
+        self.unlisten(ip, port)
+    
+    def start(self, count_thread:int = 1):
+        self.server.start(count_thread)
     
     def close(self):
         self.server.close()
@@ -73,6 +79,9 @@ class RelayServer:
         
     def listen(self, listen_ip:str, external_port:int, internal_port:int, backlog:int = 5):
         self.server.listen(listen_ip, external_port, internal_port, backlog)
+    
+    def append_listen(self, listen_ip:str, external_port:int, internal_port:int, backlog:int = 5):
+        self.server.append_listen(listen_ip, external_port, internal_port, backlog)
         
     def start(self, count_thread:int = 1):
         self.server.start(count_thread)
