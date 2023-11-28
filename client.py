@@ -8,9 +8,10 @@ import traceback
 import collections
 import select
 
-client_num = 10
-send_count = 10
-data_sum_count = 14
+client_num = 100
+send_count = 5
+data_sum_count1 = 12
+data_sum_count2 = 11
 
 def packing(source_bytes: bytes, starter: bytes = b'', closer: bytes = b'', byteorder:str = 'little') -> bytes:
     bit8_length = 1
@@ -52,18 +53,18 @@ def unpacking(source_bytes: bytes, byteorder: str = 'little') -> bytes:
     else:
         return None
 
-send_bytes = b'abcdefghijklmnop qrstuvwxyz'
-for _ in range(data_sum_count):
-    send_bytes += send_bytes
+send_bytes1 = b'abcdefghijklmnop qrstuvwxyz'
+for _ in range(data_sum_count1):
+    send_bytes1 += send_bytes1
 send_bytes2 = b'abcdefghijklmnop qrstuvwxyz'
-for _ in range(int(data_sum_count/2)):
+for _ in range(int(data_sum_count2)):
     send_bytes2 += send_bytes2
     
-print(f"data length:{len(send_bytes)} send_bytes2:{len(send_bytes2)}")
+print(f"data count:{send_count}+{send_count} send_bytes:{(len(send_bytes1)+len(send_bytes2))*send_count*client_num} send_bytes1:{len(send_bytes1)} send_bytes2:{len(send_bytes2)}")
 
 starter = b'%w$d#'
 closer = b'&sa@f#d$'
-packed_send_bytes = packing(send_bytes, starter, closer)
+packed_send_bytes = packing(send_bytes1, starter, closer)
 packed_send_bytes_length = len(packed_send_bytes)
 
 packed_send_bytes2 = packing(send_bytes2, starter, closer)
@@ -72,7 +73,8 @@ packed_send_bytes_length2 = len(packed_send_bytes2)
 
 kevents = collections.defaultdict(select.kevent)
 clients = collections.defaultdict(iosock.Client)
-recv_data = collections.defaultdict(iosock.Client)
+recv_data = collections.defaultdict(bytes)
+recv_data_len = collections.defaultdict(int)
 locks = collections.defaultdict(threading.Lock)
 import multiprocessing
 import ctypes
@@ -84,7 +86,7 @@ close_event, close_listener = socket.socketpair()
 def kqueueing():
     kq = select.kqueue()
     try:
-        print(type(kevents))
+        # print(type(kevents))
         count = collections.defaultdict(int)
         while is_running.value:
             revents = kq.control(list(kevents.values()), 1000)
@@ -107,81 +109,91 @@ def kqueueing():
                     
                 elif event.filter == select.KQ_FILTER_READ:
                     if event.flags & select.KQ_EV_EOF:
-                        eof_message = f"[{event.ident}] event.flags & select.KQ_EV_EOF"
+                        eof_message = f"[{event.ident:3}] event.flags & select.KQ_EV_EOF"
                         if event.ident in kevents:
-                            eof_message += f" Pop Event({len(kevents)}->"
+                            eof_message += f" Pop Event({len(kevents):3}->"
                             e = kevents.pop(event.ident)
-                            eof_message += f"{len(kevents)})"
+                            eof_message += f"{len(kevents):3})"
+                        
                         if event.ident in clients:
                             client : iosock.Client = clients.pop(event.ident)
                             client.close()
-                            eof_message += f" {client.get_fileno()} closed"
-                        
-                        print(eof_message)
-                        
-                    else:
-                        client : iosock.Client = clients[event.ident]
-                        data = b''
-                        with locks[event.ident]:
-                            data = client.recv()
                         
                         if event.ident in recv_data:
-                            recv_data[event.ident] += data
+                            eof_message += f" remain:{len(recv_data[event.ident])}"
+                            # if 0<len(recv_data[event.ident]):
                         else:
-                            recv_data[event.ident] = data
+                            eof_message += f" remain false"
+
+                        # print(eof_message)
                         
-                        fileno = event.ident
-                        
-                        is_start = True
-                        is_len = True
-                        is_closer = True
-                        
-                        while is_start and is_len and is_closer:
-                            try:
-                                bit8_length = 1
-                                start_index = len(starter)
-                                end_index = len(starter)+bit8_length
-                                is_start = end_index <= len(recv_data[fileno]) and recv_data[fileno][:len(starter)] == starter
-                                length_of_length_bytes = recv_data[fileno][start_index:end_index]
-                                length_of_length = int.from_bytes(length_of_length_bytes, byteorder='little')
-                                
-                                start_index = end_index
-                                end_index = end_index + length_of_length
-                                is_len = end_index <= len(recv_data[fileno])
-                                
-                                length_bytes = recv_data[fileno][start_index:end_index]
-                                source_length = int.from_bytes(length_bytes, byteorder='little')
-                                
-                                start_index = end_index
-                                end_index = end_index+source_length
-                                is_closer = end_index+len(closer) <= len(recv_data[fileno]) and recv_data[fileno][end_index:end_index+len(closer)] == closer
-                            except IndexError:
-                                break
+                    else:
+                        client : iosock.Client = clients.get(event.ident)
+                        if client:
+                            data = b''
+                            data = client.recv()
                             
-                            if is_start and is_len and is_closer:
-                                if event.ident in count:
-                                    count[event.ident] += 1
-                                else:
-                                    count[event.ident] = 1
-                                    
-                                recv_bytes:bytes = recv_data[fileno][:end_index+len(closer)]
-                                recv_data[fileno] = recv_data[fileno][end_index+len(closer):]
-                                # print(f"[{fileno}] {len(recv_bytes)} {recv_bytes[:10]}...{recv_bytes[-10:]}")
+                            if event.ident in recv_data:
+                                recv_data[event.ident] += data
+                            else:
+                                recv_data[event.ident] = data
+                                
+                            if not event.ident in recv_data_len:
+                                recv_data_len[event.ident] = 0
+                            
+                            recv_data_len[event.ident] += len(data)
+                            
+                            fileno = event.ident
+                            
+                            is_start = True
+                            is_len = True
+                            is_closer = True
+                            
+                            while is_start and is_len and is_closer:
                                 try:
-                                    if 20 == count[event.ident]:
-                                        print(f"[{fileno:2}] [{count[event.ident]:2}] recv {len(recv_bytes):,} bytes. End. Try Close")
-                                        client : iosock.Client = clients.get(fileno)
-                                        client.shutdown()
-                                    elif 20 < count[event.ident]:
-                                        print(f"[{fileno:2}] [{count[event.ident]:2}] Try Close Warning Count")
-                                        client : iosock.Client = clients.get(fileno)
-                                        client.shutdown()
+                                    bit8_length = 1
+                                    start_index = len(starter)
+                                    end_index = len(starter)+bit8_length
+                                    is_start = end_index <= len(recv_data[fileno]) and recv_data[fileno][:len(starter)] == starter
+                                    length_of_length_bytes = recv_data[fileno][start_index:end_index]
+                                    length_of_length = int.from_bytes(length_of_length_bytes, byteorder='little')
+                                    
+                                    start_index = end_index
+                                    end_index = end_index + length_of_length
+                                    is_len = end_index <= len(recv_data[fileno])
+                                    
+                                    length_bytes = recv_data[fileno][start_index:end_index]
+                                    source_length = int.from_bytes(length_bytes, byteorder='little')
+                                    
+                                    start_index = end_index
+                                    end_index = end_index+source_length
+                                    is_closer = end_index+len(closer) <= len(recv_data[fileno]) and recv_data[fileno][end_index:end_index+len(closer)] == closer
+                                except IndexError:
+                                    break
+                                
+                                if is_start and is_len and is_closer:
+                                    if event.ident in count:
+                                        count[event.ident] += 1
                                     else:
-                                        print(f"[{fileno:2}] [{count[event.ident]:2}] recv {len(recv_bytes):,} bytes")
+                                        count[event.ident] = 1
                                         
-                                        
-                                except KeyError:
-                                    pass
+                                    recv_bytes:bytes = recv_data[fileno][:end_index+len(closer)]
+                                    recv_data[fileno] = recv_data[fileno][end_index+len(closer):]
+                                    # print(f"[{fileno}] {len(recv_bytes)} {recv_bytes[:10]}...{recv_bytes[-10:]}")
+                                    try:
+                                        if send_count*2 == count[event.ident]:
+                                            # print(f"[{fileno:2}] [{count[event.ident]:2}] recv {len(recv_bytes):,} bytes all:{recv_data_len[event.ident]} remain:{len(recv_data[fileno])} End. Try Close")
+                                            client : iosock.Client = clients.get(fileno)
+                                            client.shutdown()
+                                        # elif send_count*2 < count[event.ident]:
+                                            # print(f"[{fileno:2}] [{count[event.ident]:2}] Try Close Warning Count")
+                                            # client : iosock.Client = clients.get(fileno)
+                                            # client.shutdown()
+                                        # else:
+                                        #     print(f"[{fileno:2}] [{count[event.ident]:2}] recv {len(recv_bytes):,} bytes all:{recv_data_len[event.ident]} remain:{len(recv_data[fileno])}")
+                                            
+                                    except KeyError:
+                                        pass
                 else:
                     print('else', event)
         
@@ -197,9 +209,13 @@ def signal_handler(num_recv_signal, frame):
         close_event.shutdown(socket.SHUT_RDWR)
     except Exception as e:
         print(e)
-    
+
+from multiprocessing.pool import ThreadPool    
+
 if __name__ == '__main__':
     try:
+        pool = ThreadPool(16)
+        
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGABRT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
@@ -218,7 +234,7 @@ if __name__ == '__main__':
             client = iosock.Client()
             client.connect('218.55.118.203', 59012)
             client_fileno = client.get_fileno()
-            print(f"connect [{client_fileno}]")
+            # print(f"connect [{client_fileno}]")
             locks[client_fileno] = threading.Lock()
             clients[client_fileno] = client
             kevent = select.kevent(client_fileno)
@@ -228,17 +244,38 @@ if __name__ == '__main__':
         
         client_filenos = list(clients.keys())
         
-        for client_fileno in client_filenos:
-            send_count_index = 0
-            for _ in range(send_count):
-                if not is_running.value:
-                    break
-                clients[client_fileno].sendall(packed_send_bytes)
-                clients[client_fileno].sendall(packed_send_bytes2)
-                print(f"[{client_fileno:2}] [{send_count_index:2}] send {len(packed_send_bytes):,} bytes")
-                send_count_index += 1
-                print(f"[{client_fileno:2}] [{send_count_index:2}] send {len(packed_send_bytes2):,} bytes")
-                send_count_index += 1
+        res_pools = []
+        for cf in client_filenos:
+            def send_data(client_fileno):
+                # send_count_index = 0
+                send_bytes_len = 0
+                for _ in range(send_count):
+                    if not is_running.value:
+                        break
+                    try:
+                        client = clients.get(client_fileno)
+                        if client:
+                            client.sendall(packed_send_bytes)
+                            send_bytes_len += len(packed_send_bytes)
+                            client.sendall(packed_send_bytes2)
+                            send_bytes_len += len(packed_send_bytes2)
+                        # print(f"[{client_fileno:2}] [{send_count_index:2}] send {len(packed_send_bytes):,} bytes")
+                        # send_count_index += 1
+                        # print(f"[{client_fileno:2}] [{send_count_index:2}] send {len(packed_send_bytes2):,} bytes")
+                        # send_count_index += 1
+                    except Exception as e:
+                        print('send',  e, traceback.format_exc())
+                    
+                return send_bytes_len
+            
+            res_pool = pool.apply_async(send_data, args=(cf,))
+            res_pools.append(res_pool)
+            
+        for res_pool in res_pools:
+            _ = res_pool.get()
+            # send_bytes_len = res_pool.get()
+            # if send_bytes_len != (send_count * len(packed_send_bytes)) + (send_count * len(packed_send_bytes2)):
+            #     print(send_bytes_len)
             
         print("finish send")
 
@@ -246,10 +283,11 @@ if __name__ == '__main__':
         
         for fd in clients:
             try:
-                client:iosock.Client = clients[fd]
-                client.close()
+                client:iosock.Client = clients.get(fd)
+                if client:
+                    client.close()
             except Exception as e:
-                print(e)
+                print('main', e)
     except Exception as e:
         print(f"main exception: {e}\n{traceback.format_exc()}")
         

@@ -43,9 +43,20 @@ class Client(abstract.ClientBase):
         
     def close(self):
         self.__client_socket.close()
+        self.__client_socket = None
             
     def sendall(self, data:bytes):
-        self.__client_socket.sendall(data)
+        try:
+            self.__client_socket.sendall(data)
+        except AttributeError:
+            pass
+        except ConnectionError:
+            pass
+        except OSError as e:
+            if e.errno == socket.EBADF:
+                pass
+            else:
+                raise e
     
     def send(self, data:bytes) -> int:
         return self.__client_socket.send(data)
