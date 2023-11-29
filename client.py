@@ -283,7 +283,7 @@ if __name__ == '__main__':
         
         for fd in clients:
             try:
-                client:iosock.Client = clients.get(fd)
+                client:iosock.ClientBase = clients.get(fd)
                 if client:
                     client.close()
             except Exception as e:
