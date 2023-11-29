@@ -15,6 +15,24 @@ from contextlib import contextmanager
 
 # import exception
 
+@contextmanager
+def __acquire_timeout(self, lock:threading.Lock, timeout:float):
+    result = lock.acquire(timeout=timeout)
+    try:
+        yield result
+    finally:
+        if result:
+            lock.release()
+@contextmanager
+def __acquire_blocking(self, lock:threading.Lock, blocking:bool):
+    result = lock.acquire(blocking=blocking)
+    try:
+        yield result
+    finally:
+        if result:
+            lock.release()
+
+
 class ClientBase():
     def __init__(self) -> None:
         self.__buffer_size = 8196
@@ -141,7 +159,7 @@ class KqueueServer:
                 break
             
             result = b''
-            with acquire_timeout(self.client_by_fileno[detect_fileno]['lock'], 1) as acqiured:
+            with __acquire_timeout(self.client_by_fileno[detect_fileno]['lock'], 1) as acqiured:
                 try:
                     while True:
                         recv_bytes = self.client_by_fileno[detect_fileno]['socket'].recv(self.__buffer_size)
@@ -177,7 +195,7 @@ class KqueueServer:
         
             client_data = self.client_by_fileno.get(send_fileno)
             if client_data:
-                with acquire_timeout(self.client_by_fileno[send_fileno]['lock'], 1) as acqiured:
+                with __acquire_timeout(self.client_by_fileno[send_fileno]['lock'], 1) as acqiured:
                     if acqiured:
                         if self.client_by_fileno[send_fileno]['sending_buffer'] == b'':
                             try:
@@ -307,23 +325,6 @@ class EpollServer():
         self.__recv_eventmask = select.EPOLLIN  | select.EPOLLHUP | select.EPOLLRDHUP | select.EPOLLET
         self.__send_recv_eventmask = select.EPOLLIN | select.EPOLLOUT | select.EPOLLHUP | select.EPOLLRDHUP | select.EPOLLET
         self.__closer_eventmask = select.EPOLLIN | select.EPOLLPRI | select.EPOLLHUP | select.EPOLLRDHUP | select.EPOLLET
-        
-    @contextmanager
-    def __acquire_timeout(self, lock:threading.Lock, timeout:float):
-        result = lock.acquire(timeout=timeout)
-        try:
-            yield result
-        finally:
-            if result:
-                lock.release()
-    @contextmanager
-    def __acquire_blocking(self, lock:threading.Lock, blocking:bool):
-        result = lock.acquire(blocking=blocking)
-        try:
-            yield result
-        finally:
-            if result:
-                lock.release()
     
     def listen(self, ip:str, port:int, backlog:int = 5):
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
