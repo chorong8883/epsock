@@ -72,7 +72,7 @@ packed_send_bytes_length2 = len(packed_send_bytes2)
 
 
 kevents = collections.defaultdict(select.kevent)
-clients = collections.defaultdict(iosock.Client)
+clients = collections.defaultdict(iosock.ClientBase)
 recv_data = collections.defaultdict(bytes)
 recv_data_len = collections.defaultdict(int)
 locks = collections.defaultdict(threading.Lock)
@@ -231,7 +231,7 @@ if __name__ == '__main__':
         for _ in range(client_num):
             if not is_running.value:
                 break
-            client = iosock.Client()
+            client = iosock.ClientBase()
             client.connect('218.55.118.203', 59012)
             client_fileno = client.get_fileno()
             # print(f"connect [{client_fileno}]")
