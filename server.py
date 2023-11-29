@@ -6,7 +6,7 @@ import math
 import errno
 import multiprocessing
 import ctypes
-server = iosock.Server()
+server = iosock.EpollServer()
 
 starter = b'%w$d#'
 closer = b'&sa@f#d$'
