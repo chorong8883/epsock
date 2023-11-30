@@ -117,7 +117,7 @@ if __name__ == '__main__':
     signal.signal(signal.SIGTERM, signal_handler)
 
     server.listen('218.55.118.203', 59012)
-    server.start(count_thread=2)
+    server.start(count_threads=2)
     for _ in range(2):
         rt = threading.Thread(target=recv_threading)
         rt.start()
