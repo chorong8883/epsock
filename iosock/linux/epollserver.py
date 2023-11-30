@@ -17,23 +17,20 @@ class EpollServer():
     def __init__(self) -> None:
         self.__buffer_size = 8196
         self.__is_running = multiprocessing.Value(ctypes.c_bool, False)
+        self.__running_threads = []
+        self.__running_thread_by_tid = collections.defaultdict(threading.Thread)
         
         self.__listener_by_ip_port = collections.defaultdict(socket.socket)
         self.__listener_by_fileno = collections.defaultdict(socket.socket)
         
-        self.__listener_fileno_by_client_fileno = collections.defaultdict(int)
-        self.__client_fileno_dict_by_listener_fileno = collections.defaultdict(dict)
-        
         self.__client_by_fileno = collections.defaultdict(socket.socket)
+        self.__listener_fileno_by_client_fileno = collections.defaultdict(int)
         self.__registered_eventmask_by_fileno = collections.defaultdict(int)
-        self.__close_lock_by_fileno = collections.defaultdict(threading.Lock)
         self.__send_lock_by_fileno = collections.defaultdict(threading.Lock)
         self.__recv_lock_by_fileno = collections.defaultdict(threading.Lock)
         self.__send_buffer_queue_by_fileno = collections.defaultdict(queue.Queue)
-        self.__send_buffer_queue_max_by_fileno = collections.defaultdict(int)
         self.__sending_buffer_by_fileno = collections.defaultdict(bytes)
-        self.__running_threads = []
-        self.__running_thread_by_tid = collections.defaultdict(threading.Thread)
+        self.__client_fileno_dict_by_listener_fileno = collections.defaultdict(dict)
         
         self.__recv_queue = queue.Queue()
         self.__recv_queue_threads = collections.defaultdict(bool)
@@ -114,7 +111,6 @@ class EpollServer():
     
     def send(self, socket_fileno:int, data:bytes = None):
         try:
-            self.__send_buffer_queue_max_by_fileno[socket_fileno] += 1
             self.__send_buffer_queue_by_fileno[socket_fileno].put_nowait(data)
         except KeyError:
             # removed
@@ -239,25 +235,13 @@ class EpollServer():
             print(f"{datetime.now()} [{threading.get_ident()}:TID] [{client_fileno:3}] Client Closed.")
 
     def __remove_client(self, client_fileno:int):
-        try:
-            self.__epoll.unregister(client_fileno)
-        except FileNotFoundError:
-            pass
-        except OSError as e:
-            if e.errno == errno.EBADF:
-                pass
-        try:
-            _ = self.__send_lock_by_fileno.pop(client_fileno)
-        except KeyError:
-            pass
-        try:
-            _ = self.__recv_lock_by_fileno.pop(client_fileno)
-        except KeyError:
-            pass
-        try:
-            _ = self.__client_by_fileno.pop(client_fileno)
-        except KeyError:
-            pass
+        try: _ = self.__send_lock_by_fileno.pop(client_fileno)
+        except KeyError: pass
+        try: _ = self.__recv_lock_by_fileno.pop(client_fileno)
+        except KeyError: pass
+        try: _ = self.__client_by_fileno.pop(client_fileno)
+        except KeyError: pass
+        
         len_send_buffer_queue = -1
         send_buffer_queue:queue.Queue = None
         try:
@@ -265,28 +249,19 @@ class EpollServer():
             len_send_buffer_queue = len(send_buffer_queue.queue)
             while not send_buffer_queue.empty():
                 _ = send_buffer_queue.get_nowait()
-        except KeyError:
-            pass
+        except KeyError: pass
+        
         sending_buffer:bytes = b''
-        try:
-            sending_buffer = self.__sending_buffer_by_fileno.pop(client_fileno)
-        except KeyError:
-            pass
-        send_count = 0
-        try:
-            send_count = self.__send_buffer_queue_max_by_fileno.pop(client_fileno)
-        except KeyError:
-            pass
+        try: sending_buffer = self.__sending_buffer_by_fileno.pop(client_fileno)
+        except KeyError: pass
         
         try:
             listener_fileno = self.__listener_fileno_by_client_fileno.pop(client_fileno)
             _ = self.__client_fileno_dict_by_listener_fileno[listener_fileno].pop(client_fileno)
-            
-        except KeyError:
-            pass
+        except KeyError: pass
         
         if 0 < len_send_buffer_queue:
-            print(f"{datetime.now()} [{threading.get_ident()}:TID] [{client_fileno:3}] Try Close. send buffer remain:{len(sending_buffer)} bytes. queue remain:{len_send_buffer_queue}/{send_count}")
+            print(f"{datetime.now()} [{threading.get_ident()}:TID] [{client_fileno:3}] Try Close. send buffer remain:{len(sending_buffer)} bytes. queue remain:{len_send_buffer_queue}")
     
     def __epoll_accept(self, listener_fileno:int):
         listener = self.__listener_by_fileno.get(listener_fileno)
@@ -316,11 +291,9 @@ class EpollServer():
                         print(e)
             
                 self.__client_by_fileno.update({client_socket_fileno : client_socket})
-                self.__close_lock_by_fileno.update({client_socket_fileno : threading.Lock()})
                 self.__send_lock_by_fileno.update({client_socket_fileno : threading.Lock()})
                 self.__recv_lock_by_fileno.update({client_socket_fileno : threading.Lock()})
                 self.__send_buffer_queue_by_fileno.update({client_socket_fileno : queue.Queue()})
-                self.__send_buffer_queue_max_by_fileno.update({client_socket_fileno : 0})
                 self.__sending_buffer_by_fileno.update({client_socket_fileno : b''})
                 if not listener_fileno in self.__client_fileno_dict_by_listener_fileno:
                     self.__client_fileno_dict_by_listener_fileno.update({listener_fileno : {}})
@@ -394,17 +367,22 @@ class EpollServer():
                         send_length = self.__client_by_fileno[client_fileno].send(self.__sending_buffer_by_fileno[client_fileno])
                         if 0<send_length:
                             self.__sending_buffer_by_fileno[client_fileno] = self.__sending_buffer_by_fileno[client_fileno][send_length:]
+                except ConnectionError as e:
+                    print(f"{datetime.now()} [{threading.get_ident()}:TID] [{client_fileno:3}] ConnectionError {e}")
+                    
                 except BlockingIOError as e:
                     if e.errno == socket.EAGAIN:
                         pass
                     else:
                         raise e
+                    
                 except OSError as e:
                     if e.errno == errno.EBADF:
                         is_connect = False
                         print(f"{datetime.now()} [{threading.get_ident()}:TID] [{client_fileno:3}] EBADF send")
                     else:
                         raise e
+                    
                 except queue.Empty:
                     pass
                 
