@@ -1,17 +1,13 @@
 import socket
 import select
-import platform
 import multiprocessing
 import ctypes
 import threading
 import collections
 import queue
 import errno
-import json
 import traceback
 from datetime import datetime
-
-# from contextlib import contextmanager
 
 class EpollServer():
     def __init__(self) -> None:
@@ -41,7 +37,7 @@ class EpollServer():
         self.__recv_eventmask = select.EPOLLIN  | select.EPOLLHUP | select.EPOLLRDHUP | select.EPOLLET
         self.__send_recv_eventmask = select.EPOLLIN | select.EPOLLOUT | select.EPOLLHUP | select.EPOLLRDHUP | select.EPOLLET
         self.__closer_eventmask = select.EPOLLIN | select.EPOLLPRI | select.EPOLLHUP | select.EPOLLRDHUP | select.EPOLLET
-    
+        
     def listen(self, ip:str, port:int, backlog:int = 5):
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -78,7 +74,7 @@ class EpollServer():
         except Exception as e:
             print(e)
 
-    def start(self, count_threads:int):
+    def start(self, count_threads:int=1):
         self.__is_running.value = True
         
         self.__epoll = select.epoll()
@@ -100,7 +96,7 @@ class EpollServer():
                 self.__epoll.register(fileno, self.__listener_eventmask)
                 self.__registered_eventmask_by_fileno.update({fileno : self.__listener_eventmask})
 
-    def recv(self):
+    def recv(self) -> (int, bytes):
         tid = threading.get_ident()
         if not tid in self.__recv_queue_threads:
             self.__recv_queue_threads[tid] = True
@@ -150,7 +146,7 @@ class EpollServer():
             self.__running_thread_by_tid[tid].join()
             
         for _ in range(len(self.__recv_queue_threads)):
-            self.__recv_queue.put_nowait(None)
+            self.__recv_queue.put_nowait((None,None))
     
     def __shutdown_listeners(self):
         for fileno in self.__listener_by_fileno:
@@ -180,9 +176,11 @@ class EpollServer():
     def __remove_listener(self, listener_fileno:int):
         try:
             listener = self.__listener_by_fileno.pop(listener_fileno)
+            print(listener.family)
         except KeyError:
             pass
-    
+        # self.__listener_by_ip_port = collections.defaultdict(socket.socket)
+        
     def __unregister(self, socket_fileno:int) -> bool:
         result = False
         try:
@@ -209,9 +207,9 @@ class EpollServer():
         client_fileno_dict = self.__client_fileno_dict_by_listener_fileno.get(listener_fileno)
         if client_fileno_dict:
             for client_fileno in client_fileno_dict:
-                self.__shutdown_client(client_fileno)
+                self.shutdown_client(client_fileno)
         
-    def __shutdown_client(self, client_fileno:int):
+    def shutdown_client(self, client_fileno:int):
         client_socket = self.__client_by_fileno.get(client_fileno)
         if client_socket:
             try:
@@ -348,10 +346,8 @@ class EpollServer():
                                 pass
 
                     if recv_bytes:
-                        self.__recv_queue.put_nowait({
-                            "fileno": client_fileno,
-                            "data": recv_bytes
-                        })
+                        self.__recv_queue.put_nowait((client_fileno, recv_bytes))
+                        
         return is_connect
     
     def __epoll_send(self, client_fileno:int):

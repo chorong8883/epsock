@@ -87,27 +87,23 @@ lock = threading.Lock()
 
 def recv_threading():
     while is_running.value:
-        fileno = -1
-        data = b''
-        recv_temp_data = server.recv()
-        if not recv_temp_data:
-            is_running.value = False
-            continue
+        fileno, recv_bytes = server.recv()
+        if fileno and recv_bytes:
+            if not fileno in locks:
+                locks[fileno] = threading.Lock()
+                
+            if not fileno in recv_data:
+                recv_data[fileno] = b''
+                recvlen[fileno] = 0
         
-        fileno = recv_temp_data['fileno']
-        data = recv_temp_data['data']
-    
-        if not fileno in locks:
-            locks[fileno] = threading.Lock()
-            
-        if not fileno in recv_data:
-            recv_data[fileno] = b''
-            recvlen[fileno] = 0
-    
-        # print(f"[{threading.get_ident()}] [{fileno}] lock. datalen:{len(data)}")
-        send_bytes = recv_callback(fileno, data)
-        for send_byte in send_bytes:
-            server.send(fileno, send_byte)
+            # print(f"[{threading.get_ident()}] [{fileno}] lock. datalen:{len(data)}")
+            send_bytes = recv_callback(fileno, recv_bytes)
+            for send_byte in send_bytes:
+                server.send(fileno, send_byte)
+        elif fileno:
+            server.shutdown_client(fileno)
+        else:
+            is_running.value = False
             
     print('Finish recv_threading')
     
