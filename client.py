@@ -72,7 +72,7 @@ packed_send_bytes_length2 = len(packed_send_bytes2)
 
 
 kevents = collections.defaultdict(select.kevent)
-clients = collections.defaultdict(iosock.Client)
+clients = collections.defaultdict(iosock.DarwinClient)
 recv_data = collections.defaultdict(bytes)
 recv_data_len = collections.defaultdict(int)
 locks = collections.defaultdict(threading.Lock)
@@ -116,7 +116,7 @@ def kqueueing():
                             eof_message += f"{len(kevents):3})"
                         
                         if event.ident in clients:
-                            client : iosock.Client = clients.pop(event.ident)
+                            client : iosock.DarwinClient = clients.pop(event.ident)
                             client.close()
                         
                         if event.ident in recv_data:
@@ -128,7 +128,7 @@ def kqueueing():
                         # print(eof_message)
                         
                     else:
-                        client : iosock.Client = clients.get(event.ident)
+                        client : iosock.DarwinClient = clients.get(event.ident)
                         if client:
                             data = b''
                             data = client.recv()
@@ -183,11 +183,11 @@ def kqueueing():
                                     try:
                                         if send_count*2 == count[event.ident]:
                                             # print(f"[{fileno:2}] [{count[event.ident]:2}] recv {len(recv_bytes):,} bytes all:{recv_data_len[event.ident]} remain:{len(recv_data[fileno])} End. Try Close")
-                                            client : iosock.Client = clients.get(fileno)
+                                            client : iosock.DarwinClient = clients.get(fileno)
                                             client.shutdown()
                                         # elif send_count*2 < count[event.ident]:
                                             # print(f"[{fileno:2}] [{count[event.ident]:2}] Try Close Warning Count")
-                                            # client : iosock.Client = clients.get(fileno)
+                                            # client : iosock.DarwinClient = clients.get(fileno)
                                             # client.shutdown()
                                         # else:
                                         #     print(f"[{fileno:2}] [{count[event.ident]:2}] recv {len(recv_bytes):,} bytes all:{recv_data_len[event.ident]} remain:{len(recv_data[fileno])}")
@@ -231,9 +231,9 @@ if __name__ == '__main__':
         for _ in range(client_num):
             if not is_running.value:
                 break
-            client = iosock.Client()
+            client = iosock.DarwinClient()
             client.connect('218.55.118.203', 59012)
-            client_fileno = client.get_fileno()
+            client_fileno = client.fileno()
             # print(f"connect [{client_fileno}]")
             locks[client_fileno] = threading.Lock()
             clients[client_fileno] = client
@@ -283,7 +283,7 @@ if __name__ == '__main__':
         
         for fd in clients:
             try:
-                client:iosock.Client = clients.get(fd)
+                client:iosock.DarwinClient = clients.get(fd)
                 if client:
                     client.close()
             except Exception as e:
