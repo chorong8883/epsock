@@ -7,6 +7,7 @@ import queue
 import traceback
 import collections
 import select
+import errno
 
 client_num = 100
 send_count = 5
@@ -132,6 +133,7 @@ def kqueueing():
                         if client:
                             data = b''
                             data = client.recv()
+                            print(data)
                             
                             if event.ident in recv_data:
                                 recv_data[event.ident] += data
@@ -253,16 +255,24 @@ if __name__ == '__main__':
                     if not is_running.value:
                         break
                     try:
-                        client = clients.get(client_fileno)
-                        if client:
-                            client.sendall(packed_send_bytes)
-                            send_bytes_len += len(packed_send_bytes)
-                            client.sendall(packed_send_bytes2)
-                            send_bytes_len += len(packed_send_bytes2)
-                        # print(f"[{client_fileno:2}] [{send_count_index:2}] send {len(packed_send_bytes):,} bytes")
-                        # send_count_index += 1
-                        # print(f"[{client_fileno:2}] [{send_count_index:2}] send {len(packed_send_bytes2):,} bytes")
-                        # send_count_index += 1
+                        try:
+                            client = clients.get(client_fileno)
+                            if client:
+                                client.sendall(packed_send_bytes)
+                                send_bytes_len += len(packed_send_bytes)
+                                client.sendall(packed_send_bytes2)
+                                send_bytes_len += len(packed_send_bytes2)
+                            # print(f"[{client_fileno:2}] [{send_count_index:2}] send {len(packed_send_bytes):,} bytes")
+                            # send_count_index += 1
+                            # print(f"[{client_fileno:2}] [{send_count_index:2}] send {len(packed_send_bytes2):,} bytes")
+                            # send_count_index += 1
+                        except BrokenPipeError:
+                            pass
+                        except OSError as e:
+                            if e.errno == errno.EBADF:
+                                pass
+                            else:
+                                raise e
                     except Exception as e:
                         print('send',  e, traceback.format_exc())
                     
