@@ -217,20 +217,17 @@ class RelayServer():
             for client_fileno in client_fileno_dict:
                 self.__shutdown_client(client_fileno)
         
-    def __shutdown_client(self, client_fileno:int):
-        client_socket = self.__client_by_fileno.get(client_fileno)
-        if client_socket:
+    def __shutdown_client(self, socket_fileno:int):
+        _socket = self.__socket_by_fileno.get(socket_fileno)
+        if _socket:
             try:
-                client_socket.shutdown(socket.SHUT_RDWR)
-            except ConnectionResetError:
-                print(f"{datetime.now()} [{threading.get_ident()}:TID] [{client_fileno:3}] ConnectionResetError")
-                
-            except BrokenPipeError:
-                print(f"{datetime.now()} [{threading.get_ident()}:TID] [{client_fileno:3}] BrokenPipeError")
+                _socket.shutdown(socket.SHUT_RDWR)
+            except ConnectionError:
+                print(f"{datetime.now()} [{threading.get_ident()}:TID] [{socket_fileno:3}] ConnectionError {e}")
                 
             except OSError as e:
                 if e.errno == errno.ENOTCONN: # errno 107
-                    print(f"{datetime.now()} [{threading.get_ident()}:TID] [{client_fileno:3}] ENOTCONN")
+                    print(f"{datetime.now()} [{threading.get_ident()}:TID] [{socket_fileno:3}] ENOTCONN")
                 else:
                     raise e
     
@@ -331,13 +328,14 @@ class RelayServer():
                         self.__send_buffer_queue_by_fileno.update({relay_socket_fileno : queue.Queue()})
                         self.__sending_buffer_by_fileno.update({relay_socket_fileno : b''})
                     except socket.error as e:
-                        print(e)
+                        print('accept', e)
                         disconnect_client = True
                 else:
                     disconnect_client = True
                 
                 if disconnect_client:
-                    self.__shutdown_client(client_socket_fileno)
+                    client_socket.send(b'NOTSERVER')
+                    # self.__shutdown_client(client_socket_fileno)
                     
     def relay(self, fromip:str, fromport:int, toip:str, toport:int):
         self.__listen(fromip, fromport)
@@ -478,25 +476,26 @@ class RelayServer():
                                 recv_bytes = self.__epoll_recv(from_socket)
                                 if recv_bytes:
                                     self.send(to_socket.fileno(), recv_bytes)
-                            else:
-                                if from_socket:
-                                    from_socket_fileno = from_socket.fileno()
-                                    if self.__unregister(from_socket_fileno):
-                                        print("from_socket_fileno")
-                                        self.__close_client(from_socket_fileno)
-                                        self.__remove_client(from_socket_fileno)
-                                if to_socket:
-                                    to_socket_fileno = to_socket.fileno()
-                                    if self.__unregister(to_socket_fileno):
-                                        print("to_socket_fileno")
-                                        self.__close_client(to_socket_fileno)
-                                        self.__remove_client(to_socket_fileno)
                                     
                         if detect_event & (select.EPOLLHUP | select.EPOLLRDHUP):
+                            to_socket_fileno:int = None
+                            if detect_fileno in self.__client_by_fileno:
+                                to_socket = self.__relay_by_client_fileno.get(detect_fileno)
+                                if to_socket:
+                                    to_socket_fileno = to_socket.fileno()
+                                    
+                            elif detect_fileno in self.__relay_by_fileno:
+                                to_socket = self.__client_by_relay_fileno.get(detect_fileno)
+                                if to_socket:
+                                    to_socket_fileno = to_socket.fileno()
+                                    
+                            if to_socket_fileno:
+                                self.__shutdown_client(to_socket_fileno)
+                            
                             if self.__unregister(detect_fileno):
                                 self.__close_client(detect_fileno)
                                 self.__remove_client(detect_fileno)
-                        
+                            
                         elif not detect_event & (select.EPOLLIN | select.EPOLLOUT):
                             print(f"{datetime.now()} [{threading.get_ident()}:TID] [{detect_fileno:3}] Unknown Event. {detect_event:#06x}, exist:{detect_fileno in self.__client_by_fileno}")
                         

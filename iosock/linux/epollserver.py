@@ -341,11 +341,9 @@ class EpollServer():
                 try:
                     if self.__sending_buffer_by_fileno[client_fileno] == b'':
                         self.__sending_buffer_by_fileno[client_fileno] = self.__send_buffer_queue_by_fileno[client_fileno].get_nowait()
-                    client = self.__client_by_fileno.get(client_fileno)
-                    if client:
-                        send_length = self.__client_by_fileno[client_fileno].send(self.__sending_buffer_by_fileno[client_fileno])
-                        if 0<send_length:
-                            self.__sending_buffer_by_fileno[client_fileno] = self.__sending_buffer_by_fileno[client_fileno][send_length:]
+                    send_length = self.__client_by_fileno[client_fileno].send(self.__sending_buffer_by_fileno[client_fileno])
+                    if 0<send_length:
+                        self.__sending_buffer_by_fileno[client_fileno] = self.__sending_buffer_by_fileno[client_fileno][send_length:]
                 except ConnectionError as e:
                     print(f"{datetime.now()} [{threading.get_ident()}:TID] [{client_fileno:3}] ConnectionError {e}")
                     
