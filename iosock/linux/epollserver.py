@@ -152,7 +152,7 @@ class EpollServer():
             self.__running_thread_by_tid[tid].join()
             
         for _ in range(len(self.__recv_queue_threads)):
-            self.__recv_queue.put_nowait((None,None))
+            self.__recv_queue.put_nowait(None)
     
     def __shutdown_listeners(self):
         for fileno in self.__listener_by_fileno:
