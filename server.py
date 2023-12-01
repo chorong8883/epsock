@@ -96,7 +96,6 @@ def recv_threading():
                 recv_data[fileno] = b''
                 recvlen[fileno] = 0
         
-            # print(f"[{threading.get_ident()}] [{fileno}] lock. datalen:{len(data)}")
             send_bytes = recv_callback(fileno, recv_bytes)
             for send_byte in send_bytes:
                 server.send(fileno, send_byte)
@@ -112,7 +111,8 @@ if __name__ == '__main__':
     signal.signal(signal.SIGABRT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    server.listen('218.55.118.203', 59012)
+    # server.listen('218.55.118.203', 59012)
+    server.listen('localhost', 60809)
     server.start(count_threads=2)
     for _ in range(2):
         rt = threading.Thread(target=recv_threading)

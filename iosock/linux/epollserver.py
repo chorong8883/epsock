@@ -176,7 +176,6 @@ class EpollServer():
     def __remove_listener(self, listener_fileno:int):
         try:
             listener = self.__listener_by_fileno.pop(listener_fileno)
-            print(listener.family)
         except KeyError:
             pass
         # self.__listener_by_ip_port = collections.defaultdict(socket.socket)
@@ -206,7 +205,8 @@ class EpollServer():
     def __shutdown_clients_by_listener(self, listener_fileno:int):
         client_fileno_dict = self.__client_fileno_dict_by_listener_fileno.get(listener_fileno)
         if client_fileno_dict:
-            for client_fileno in client_fileno_dict:
+            client_fileno_list = list(client_fileno_dict.keys())
+            for client_fileno in client_fileno_list:
                 self.shutdown_client(client_fileno)
         
     def shutdown_client(self, client_fileno:int):
@@ -259,7 +259,7 @@ class EpollServer():
         except KeyError: pass
         
         if 0 < len_send_buffer_queue:
-            print(f"{datetime.now()} [{threading.get_ident()}:TID] [{client_fileno:3}] Try Close. send buffer remain:{len(sending_buffer)} bytes. queue remain:{len_send_buffer_queue}")
+            print(f"{datetime.now()} [{threading.get_ident()}:TID] [{client_fileno:3}] Removed. But send buffer remain:{len(sending_buffer)} bytes. queue remain:{len_send_buffer_queue}")
     
     def __epoll_accept(self, listener_fileno:int):
         listener = self.__listener_by_fileno.get(listener_fileno)
@@ -269,25 +269,8 @@ class EpollServer():
                 # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{detect_fileno:3}] accept {client_socket.fileno():2}:{address}")
                 client_socket_fileno = client_socket.fileno()
                 client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                
                 client_socket.setblocking(False)
                 
-                exist_client_socket = self.__client_by_fileno.get(client_socket_fileno)
-                if exist_client_socket:
-                    try:
-                        exist_client_socket.shutdown(socket.SHUT_RDWR)
-                    except OSError as e:
-                        if e.errno == errno.ENOTCONN: # errno 107
-                            pass
-                        else:
-                            raise e
-                    
-                    exist_client_socket.close()
-                    try:
-                        self.__epoll.unregister(client_socket)
-                    except Exception as e:
-                        print(e)
-            
                 self.__client_by_fileno.update({client_socket_fileno : client_socket})
                 self.__send_lock_by_fileno.update({client_socket_fileno : threading.Lock()})
                 self.__recv_lock_by_fileno.update({client_socket_fileno : threading.Lock()})
