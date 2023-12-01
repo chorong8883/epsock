@@ -106,8 +106,11 @@ class EpollServer():
         if not tid in self.__recv_queue_threads:
             self.__recv_queue_threads[tid] = True
         if self.__is_running.value:
-            fileno, recv_bytes = self.__recv_queue.get()
-            return RecvData(fileno, recv_bytes)
+            recv_data = self.__recv_queue.get()
+            if recv_data:
+                return RecvData(recv_data[0], recv_data[1])
+            else:
+                return None
         else:
             return None
     
