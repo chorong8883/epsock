@@ -9,7 +9,7 @@ import collections
 import select
 import errno
 
-client_num = 100
+client_num = 1
 send_count = 5
 data_sum_count1 = 12
 data_sum_count2 = 11

@@ -9,6 +9,11 @@ import errno
 import traceback
 from datetime import datetime
 
+class RecvData:
+    def __init__(self, fileno:int, recv_bytes:bytes) -> None:
+        self.fileno = fileno
+        self.recv_bytes = recv_bytes
+
 class EpollServer():
     def __init__(self) -> None:
         self.__buffer_size = 8196
@@ -96,12 +101,13 @@ class EpollServer():
                 self.__epoll.register(fileno, self.__listener_eventmask)
                 self.__registered_eventmask_by_fileno.update({fileno : self.__listener_eventmask})
 
-    def recv(self) -> (int, bytes):
+    def recv(self) -> RecvData:
         tid = threading.get_ident()
         if not tid in self.__recv_queue_threads:
             self.__recv_queue_threads[tid] = True
         if self.__is_running.value:
-            return self.__recv_queue.get()
+            fileno, recv_bytes = self.__recv_queue.get()
+            return RecvData(fileno, recv_bytes)
         else:
             return None
     
