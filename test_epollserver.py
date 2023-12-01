@@ -22,7 +22,6 @@ import collections
 count = collections.defaultdict(int)
 recv_data = collections.defaultdict(bytes)
 recvlen = collections.defaultdict(int)
-locks = collections.defaultdict(threading.Lock)
 
 def recv_callback(fileno, recv_bytes) -> list[bytes]:
     send_bytes = []
@@ -83,15 +82,11 @@ def recv_callback(fileno, recv_bytes) -> list[bytes]:
 
 is_running = multiprocessing.Value(ctypes.c_bool, True)
 threads = []
-lock = threading.Lock()
 
 def recv_threading():
     while is_running.value:
         fileno, recv_bytes = server.recv()
         if fileno and recv_bytes:
-            if not fileno in locks:
-                locks[fileno] = threading.Lock()
-                
             if not fileno in recv_data:
                 recv_data[fileno] = b''
                 recvlen[fileno] = 0
