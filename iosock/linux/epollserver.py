@@ -9,11 +9,6 @@ import errno
 import traceback
 from datetime import datetime
 
-class RecvData:
-    def __init__(self, fileno:int, recv_bytes:bytes) -> None:
-        self.fileno = fileno
-        self.recv_bytes = recv_bytes
-
 class EpollServer():
     def __init__(self) -> None:
         self.__buffer_size = 8196
@@ -34,7 +29,6 @@ class EpollServer():
         self.__client_fileno_dict_by_listener_fileno = collections.defaultdict(dict)
         
         self.__recv_queue = queue.Queue()
-        self.__recv_queue_threads = collections.defaultdict(bool)
         
         self.__epoll : select.epoll = None
         
@@ -42,7 +36,7 @@ class EpollServer():
         self.__recv_eventmask = select.EPOLLIN  | select.EPOLLHUP | select.EPOLLRDHUP | select.EPOLLET
         self.__send_recv_eventmask = select.EPOLLIN | select.EPOLLOUT | select.EPOLLHUP | select.EPOLLRDHUP | select.EPOLLET
         self.__closer_eventmask = select.EPOLLIN | select.EPOLLPRI | select.EPOLLHUP | select.EPOLLRDHUP | select.EPOLLET
-        
+    
     def listen(self, ip:str, port:int, backlog:int = 5):
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -101,17 +95,17 @@ class EpollServer():
                 self.__epoll.register(fileno, self.__listener_eventmask)
                 self.__registered_eventmask_by_fileno.update({fileno : self.__listener_eventmask})
 
-    def recv(self) -> RecvData:
-        tid = threading.get_ident()
-        if not tid in self.__recv_queue_threads:
-            self.__recv_queue_threads[tid] = True
+    def recv(self) -> tuple[int, bytes]:
         if self.__is_running.value:
             recv_data = self.__recv_queue.get()
             if recv_data:
-                return RecvData(recv_data[0], recv_data[1])
+                return (recv_data[0], recv_data[1])
             else:
+                self.__is_running.value = False
+                self.__recv_queue.put_nowait(None)
                 return None
         else:
+            self.__recv_queue.put_nowait(None)
             return None
     
     def send(self, socket_fileno:int, data:bytes = None):
@@ -148,14 +142,11 @@ class EpollServer():
         
         for _ in self.__running_threads:
             self.__close_event.send(b'close')
-            # print("close before recv")
             tid_bytes = self.__close_event.recv(32)
             tid = int.from_bytes(tid_bytes, byteorder='big')
-            # print(f"close recv tid:{tid}")
             self.__running_thread_by_tid[tid].join()
             
-        for _ in range(len(self.__recv_queue_threads)):
-            self.__recv_queue.put_nowait(None)
+        self.__recv_queue.put_nowait(None)
     
     def __shutdown_listeners(self):
         for fileno in self.__listener_by_fileno:
@@ -275,8 +266,8 @@ class EpollServer():
         if listener:
             try:
                 client_socket, address = listener.accept()
-                # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{detect_fileno:3}] accept {client_socket.fileno():2}:{address}")
                 client_socket_fileno = client_socket.fileno()
+                print(f"{datetime.now()} [{threading.get_ident()}:TID] [{client_socket_fileno:3}] accept {client_socket.fileno():2}:{address}")
                 client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 client_socket.setblocking(False)
                 

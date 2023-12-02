@@ -37,16 +37,13 @@ class RelayServer():
         self.__client_by_relay_fileno = collections.defaultdict(socket.socket)
         self.__relay_by_client_fileno = collections.defaultdict(socket.socket)
         
-        
-        self.__recv_queue = queue.Queue()
-        self.__recv_queue_threads = collections.defaultdict(bool)
-        
         self.__epoll : select.epoll = None
         
         self.__listener_eventmask = select.EPOLLIN | select.EPOLLPRI | select.EPOLLHUP | select.EPOLLRDHUP | select.EPOLLET
         self.__recv_eventmask = select.EPOLLIN  | select.EPOLLHUP | select.EPOLLRDHUP | select.EPOLLET
         self.__send_recv_eventmask = select.EPOLLIN | select.EPOLLOUT | select.EPOLLHUP | select.EPOLLRDHUP | select.EPOLLET
         self.__closer_eventmask = select.EPOLLIN | select.EPOLLPRI | select.EPOLLHUP | select.EPOLLRDHUP | select.EPOLLET
+        
     
     def __listen(self, ip:str, port:int, backlog:int = 5):
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -106,15 +103,6 @@ class RelayServer():
                 self.__epoll.register(fileno, self.__listener_eventmask)
                 self.__registered_eventmask_by_fileno.update({fileno : self.__listener_eventmask})
 
-    def recv(self) -> (int, bytes):
-        tid = threading.get_ident()
-        if not tid in self.__recv_queue_threads:
-            self.__recv_queue_threads[tid] = True
-        if self.__is_running.value:
-            return self.__recv_queue.get()
-        else:
-            return None
-    
     def send(self, socket_fileno:int, data:bytes = None):
         try:
             self.__send_buffer_queue_by_fileno[socket_fileno].put_nowait(data)
@@ -149,15 +137,10 @@ class RelayServer():
         
         for _ in self.__running_threads:
             self.__close_event.send(b'close')
-            # print("close before recv")
             tid_bytes = self.__close_event.recv(32)
             tid = int.from_bytes(tid_bytes, byteorder='big')
-            # print(f"close recv tid:{tid}")
             self.__running_thread_by_tid[tid].join()
             
-        for _ in range(len(self.__recv_queue_threads)):
-            self.__recv_queue.put_nowait((None,None))
-    
     def __shutdown_listeners(self):
         for fileno in self.__listener_by_fileno:
             self.__shutdown_listener(fileno)
@@ -337,8 +320,9 @@ class RelayServer():
                     client_socket.send(b'NOTSERVER')
                     # self.__shutdown_client(client_socket_fileno)
                     
-    def relay(self, fromip:str, fromport:int, toip:str, toport:int):
+    def relay(self, fromip:str, fromport:int, toip:str, toport:int, check_relay_function=None):
         self.__listen(fromip, fromport)
+        self.check_relay_function = check_relay_function
         self.__relay_addr_by_listener_addr[f"{fromip}:{fromport}"] = f"{toip}:{toport}"
     
     def __epoll_recv(self, recv_socket:socket.socket) -> bytes:
@@ -394,6 +378,7 @@ class RelayServer():
                         send_length = client.send(self.__sending_buffer_by_fileno[client_fileno])
                         if 0<send_length:
                             self.__sending_buffer_by_fileno[client_fileno] = self.__sending_buffer_by_fileno[client_fileno][send_length:]
+                            
                 except ConnectionError as e:
                     print(f"{datetime.now()} [{threading.get_ident()}:TID] [{client_fileno:3}] send ConnectionError {e}")
                     
@@ -424,8 +409,9 @@ class RelayServer():
                     if e.errno == errno.EBADF:
                         is_connect = False
                         print(f"{datetime.now()} [{threading.get_ident()}:TID] [{client_fileno:3}] EBADF send modify")
+                        
         return is_connect
-                
+
     def __epoll_thread_function(self):
         __is_running = True
         tid = threading.get_ident()
@@ -475,7 +461,11 @@ class RelayServer():
                             if from_socket and to_socket:
                                 recv_bytes = self.__epoll_recv(from_socket)
                                 if recv_bytes:
-                                    self.send(to_socket.fileno(), recv_bytes)
+                                    if self.check_relay_function:
+                                        if self.check_relay_function(from_socket.fileno(), to_socket.fileno(), recv_bytes):
+                                            self.send(to_socket.fileno(), recv_bytes)
+                                    else:
+                                        self.send(to_socket.fileno(), recv_bytes)
                                     
                         if detect_event & (select.EPOLLHUP | select.EPOLLRDHUP):
                             to_socket_fileno:int = None
