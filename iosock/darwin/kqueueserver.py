@@ -158,8 +158,8 @@ class KqueueServer:
                         elif not self.client_by_fileno[send_fileno]['send_buffer_queue'].empty():
                             self.__send_fileno_queue.put_nowait(send_fileno)
                         
-                    else:
-                        print('send lock timeout')
+                    # else:
+                        # print('send lock timeout')
                             
 #####################################################################################################################
 #####################################################################################################################
@@ -181,18 +181,18 @@ class KqueueServer:
             events = kq.control(list(kevents), 1000)
             for event in events:
                 if event.flags & select.KQ_EV_ERROR:
-                    print("event.flags & select.KQ_EV_ERROR")
+                    # print("event.flags & select.KQ_EV_ERROR")
                     return
                     
                 if event.ident == self.__listen_socket.fileno():
                     if event.flags & select.KQ_EV_EOF:
-                        print(f"event.ident == detect_close_fd.fileno() {event}")
+                        # print(f"event.ident == detect_close_fd.fileno() {event}")
                         self.__is_running.value = False
                         continue
                     else:
                         client_socket, address = self.__listen_socket.accept()
                         client_socket_fileno = client_socket.fileno()
-                        print(f"accept {client_socket_fileno} {address}")
+                        # print(f"accept {client_socket_fileno} {address}")
                         client_socket.setblocking(False)
                         client = self.client_by_fileno.get(client_socket_fileno)
                         if client:
@@ -210,7 +210,7 @@ class KqueueServer:
                         
                 elif event.filter == select.KQ_FILTER_READ:
                     if event.flags & select.KQ_EV_EOF:
-                        print("event.flags & select.KQ_EV_EOF")
+                        # print("event.flags & select.KQ_EV_EOF")
                         self.__kevent_by_fileno.pop(event.ident)
                         client_data = self.client_by_fileno.pop(event.ident)
                         client_data['socket'].shutdown(socket.SHUT_RDWR)
@@ -219,7 +219,7 @@ class KqueueServer:
                     else:
                         client_data = self.client_by_fileno.pop(event.ident)
                         data = client_data['socket'].recv()
-                        print(data)
+                        # print(data)
                 
         kq.close()
         
