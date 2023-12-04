@@ -106,22 +106,20 @@ class RelayServer():
     def send(self, socket_fileno:int, data:bytes = None):
         try:
             self.__send_buffer_queue_by_fileno[socket_fileno].put_nowait(data)
-        except KeyError:
-            # removed
-            pass
-        try:
             self.__registered_eventmask_by_fileno[socket_fileno] = self.__send_recv_eventmask
             self.__epoll.modify(socket_fileno, self.__send_recv_eventmask)
-            
-        except FileNotFoundError:
-            print("FileNotFoundError self.__epoll.modify(send_fileno, self.__send_eventmask)")
+        
+        except KeyError:
+            print(f"[{socket_fileno}] send KeyError")
             pass
+        
+        except FileNotFoundError:
+            print(f"[{socket_fileno}] send FileNotFoundError self.__epoll.modify")
+            pass
+        
         except OSError as e:
             if e.errno == errno.EBADF:
-                print("e.errno == errno.EBADF self.__epoll.modify(send_fileno, self.__send_eventmask)")
-                pass
-            elif e.errno == errno.EBADFD:
-                print("e.errno == errno.EBADFD self.__epoll.modify(send_fileno, self.__send_eventmask)")
+                print(f"[{socket_fileno}] send e.errno == errno.EBADF self.__epoll.modify")
                 pass
             else:
                 raise e
