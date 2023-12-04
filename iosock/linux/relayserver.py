@@ -141,7 +141,8 @@ class RelayServer():
             self.__running_thread_by_tid[tid].join()
             
     def __shutdown_listeners(self):
-        for fileno in self.__listener_by_fileno:
+        fileno_list = list(self.__listener_by_fileno.keys())
+        for fileno in fileno_list:
             self.__shutdown_listener(fileno)
             
     def __shutdown_listener(self, listener_fileno:int):
