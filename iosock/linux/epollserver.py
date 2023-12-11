@@ -97,6 +97,14 @@ class EpollServer():
                 self.__registered_eventmask_by_fileno.update({fileno : self.__listener_eventmask})
 
     def recv(self) -> tuple[int, bytes]:
+        '''
+        Return
+        -
+        tuple[int, bytes] or None\n
+        (int) : fileno, (bytes) : receive bytes\n
+        or\n
+        None : Error or Close
+        '''
         if self.__is_running.value:
             recv_data = self.__recv_queue.get()
             if recv_data:

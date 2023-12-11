@@ -321,7 +321,7 @@ class RelayServer():
                 
                 if disconnect_client:
                     client_socket.send(b'NOTSERVER')
-                    # self.__shutdown_client(client_socket_fileno)
+                    self.__shutdown_client(client_socket.fileno())
                     
     def relay(self, fromip:str, fromport:int, toip:str, toport:int, check_relay_function=None):
         self.__listen(fromip, fromport)
