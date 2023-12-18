@@ -13,6 +13,7 @@ class EpollServer():
     def __init__(self) -> None:
         self.__buffer_size = 8196
         self.__is_running = multiprocessing.Value(ctypes.c_bool, False)
+        self.__is_debug_mode = multiprocessing.Value(ctypes.c_bool, False)
         self.__running_threads = []
         self.__running_thread_by_tid = collections.defaultdict(threading.Thread)
         
@@ -66,16 +67,13 @@ class EpollServer():
             self.__registered_eventmask_by_fileno.update({listener_fileno : self.__listener_eventmask})
 
     def unlisten(self, ip:str, port:int):
-        try:
-            listener = self.__listener_by_ip_port.get(f"{ip}:{port}")
-            if listener:
-                listener.shutdown(socket.SHUT_RDWR)
-        except Exception as e:
-            # print(e)
-            pass
-
-    def start(self, count_threads:int=1):
+        listener = self.__listener_by_ip_port.get(f"{ip}:{port}")
+        if listener:
+            listener.shutdown(socket.SHUT_RDWR)
+    
+    def start(self, count_threads:int=1, is_debug_mode:bool = False):
         self.__is_running.value = True
+        self.__is_debug_mode.value = is_debug_mode
         
         self.__epoll = select.epoll()
         self.__close_event, self.__close_event_listener = socket.socketpair()
@@ -92,28 +90,38 @@ class EpollServer():
                 if self.__registered_eventmask_by_fileno[fileno] != self.__listener_eventmask:
                     self.__epoll.modify(fileno, self.__listener_eventmask)
             else:
-                # After 'listen()'
                 self.__epoll.register(fileno, self.__listener_eventmask)
                 self.__registered_eventmask_by_fileno.update({fileno : self.__listener_eventmask})
 
-    def recv(self) -> tuple[int, bytes]:
+    def recv(self) -> dict:
         '''
         Return
         -
-        tuple[int, bytes] or None\n
-        (int) : fileno, (bytes) : receive bytes\n
-        or\n
-        None : Error or Close
+        dict\n
+        Error or Close if return is None\n
+        dict['type'] : 'accept', 'recv', 'debug', 'close_client'\n
+        if dict['type'] == 'accept'
+            dict['fileno'] (int) : socket fileno
+        elif dict['type'] == 'recv'
+            dict['fileno'] (int) : socket fileno
+            dict['bytes'] (bytes) : receive bytes
+        elif dict['type'] == 'debug'
+            dict['message'] (str) : debug message
+        elif dict['type'] == 'close_client'
+            dict['fileno'] (int) : socket fileno
+            
         '''
         if self.__is_running.value:
             recv_data = self.__recv_queue.get()
             if recv_data:
-                return (recv_data[0], recv_data[1])
+                return recv_data
             else:
+                #for multithreading
                 self.__is_running.value = False
                 self.__recv_queue.put_nowait(None)
                 return None
         else:
+            #for multithreading
             self.__recv_queue.put_nowait(None)
             return None
     
@@ -122,18 +130,23 @@ class EpollServer():
             self.__send_buffer_queue_by_fileno[socket_fileno].put_nowait(data)
             self.__registered_eventmask_by_fileno[socket_fileno] = self.__send_recv_eventmask
             self.__epoll.modify(socket_fileno, self.__send_recv_eventmask)
-        
+            
         except KeyError:
-            # print(f"[{socket_fileno}] send KeyError")
-            pass
+            if self.__is_debug_mode.value:
+                self.__recv_queue.put_nowait({
+                    "type" : "debug",
+                    "message" : f"[{socket_fileno}] send KeyError.\n{traceback.format_exc()}"
+                })
             
         except FileNotFoundError:
-            # print(f"[{socket_fileno}] send FileNotFoundError self.__epoll.modify")
-            pass
-        
+            if self.__is_debug_mode.value:
+                self.__recv_queue.put_nowait({
+                    "type" : "debug",
+                    "message" : f"[{socket_fileno}] send FileNotFoundError.\n{traceback.format_exc()}"
+                })
+            
         except OSError as e:
             if e.errno == errno.EBADF:
-                # print(f"[{socket_fileno}] send e.errno == errno.EBADF self.__epoll.modify")
                 pass
             else:
                 raise e
@@ -172,18 +185,16 @@ class EpollServer():
             pass
         except OSError as e:
             if e.errno == errno.EBADF:
-                # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{listener_fileno:3}] __close_listener")
                 pass   
             else:
                 raise e
         listener = self.__listener_by_fileno.get(listener_fileno)
         if listener:
             listener.close()
-            # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{listener_fileno:3}] Listner Close()")
-        
+            
     def __remove_listener(self, listener_fileno:int):
         try:
-            listener = self.__listener_by_fileno.pop(listener_fileno)
+            _ = self.__listener_by_fileno.pop(listener_fileno)
         except KeyError:
             pass
         # self.__listener_by_ip_port = collections.defaultdict(socket.socket)
@@ -194,18 +205,23 @@ class EpollServer():
             _ = self.__registered_eventmask_by_fileno.pop(socket_fileno)
             self.__epoll.unregister(socket_fileno)
             result = True
-            # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{socket_fileno:3}] __unregister")
-        
+            
         except KeyError:
-            # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{detect_fileno:3}] __unregister KeyError")
-            pass
-        
+            if self.__is_debug_mode.value:
+                self.__recv_queue.put_nowait({
+                    "type" : "debug",
+                    "message" : f"[{socket_fileno}] unregister KeyError.\n{traceback.format_exc()}"
+                })
+            
         except FileNotFoundError:
-            # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{socket_fileno:3}] __unregister FileNotFoundError")
-            pass
+            if self.__is_debug_mode.value:
+                self.__recv_queue.put_nowait({
+                    "type" : "debug",
+                    "message" : f"[{socket_fileno}] unregister FileNotFoundError.\n{traceback.format_exc()}"
+                })
+            
         except OSError as e:
             if e.errno == errno.EBADF:
-                # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{socket_fileno:3}] __unregister EBADF")
                 pass
             else:
                 raise e
@@ -224,25 +240,36 @@ class EpollServer():
             try:
                 client_socket.shutdown(socket.SHUT_RDWR)
             except ConnectionResetError:
-                # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{client_fileno:3}] ConnectionResetError")
-                pass
+                if self.__is_debug_mode.value:
+                    self.__recv_queue.put_nowait({
+                        "type" : "debug",
+                        "message" : f"[{client_fileno}] shutdown_client ConnectionResetError.\n{traceback.format_exc()}"
+                    })
+            
             except BrokenPipeError:
-                # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{client_fileno:3}] BrokenPipeError")
-                pass
-                
+                if self.__is_debug_mode.value:
+                    self.__recv_queue.put_nowait({
+                        "type" : "debug",
+                        "message" : f"[{client_fileno}] shutdown_client BrokenPipeError.\n{traceback.format_exc()}"
+                    })
+            
             except OSError as e:
                 if e.errno == errno.ENOTCONN: # errno 107
-                    # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{client_fileno:3}] ENOTCONN")
                     pass
                 else:
                     raise e
-    
+        
     def __close_client(self, client_fileno:int):
         client_socket = self.__client_by_fileno.get(client_fileno)
         if client_socket:
             client_socket.close()
-            # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{client_fileno:3}] Client Closed.")
-
+        
+        self.__recv_queue.put_nowait({
+            "type" : "close_client",
+            "fileno" : client_fileno
+        })
+    
+            
     def __remove_client(self, client_fileno:int):
         try: _ = self.__send_lock_by_fileno.pop(client_fileno)
         except KeyError: pass
@@ -251,6 +278,7 @@ class EpollServer():
         try: _ = self.__client_by_fileno.pop(client_fileno)
         except KeyError: pass
         
+        #remain send buffer queue
         len_send_buffer_queue = -1
         send_buffer_queue:queue.Queue = None
         try:
@@ -260,8 +288,11 @@ class EpollServer():
                 _ = send_buffer_queue.get_nowait()
         except KeyError: pass
         
-        sending_buffer:bytes = b''
-        try: sending_buffer = self.__sending_buffer_by_fileno.pop(client_fileno)
+        #remain send buffer 
+        len_sending_buffer = 0
+        try: 
+            sending_buffer = self.__sending_buffer_by_fileno.pop(client_fileno)
+            len_sending_buffer = len(sending_buffer)
         except KeyError: pass
         
         try:
@@ -270,8 +301,12 @@ class EpollServer():
         except KeyError: pass
         
         if 0 < len_send_buffer_queue:
-            # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{client_fileno:3}] Removed. But send buffer remain:{len(sending_buffer)} bytes. queue remain:{len_send_buffer_queue}")
-            pass
+            if self.__is_debug_mode.value:
+                self.__recv_queue.put_nowait({
+                    "type" : "debug",
+                    "message" : f"[{client_fileno}] Removed. But send buffer remain:{len_sending_buffer} bytes. queue remain:{len_send_buffer_queue}."
+                })
+        
     
     def __epoll_accept(self, listener_fileno:int):
         listener = self.__listener_by_fileno.get(listener_fileno)
@@ -279,7 +314,6 @@ class EpollServer():
             try:
                 client_socket, address = listener.accept()
                 client_socket_fileno = client_socket.fileno()
-                # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{client_socket_fileno:3}] accept {client_socket.fileno():2}:{address}")
                 client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 client_socket.setblocking(False)
                 
@@ -295,9 +329,14 @@ class EpollServer():
                 
                 self.__registered_eventmask_by_fileno[client_socket_fileno] = self.__recv_eventmask
                 self.__epoll.register(client_socket, self.__recv_eventmask)
+                
+                self.__recv_queue.put_nowait({
+                    "type" : "accept",
+                    "fileno" : client_socket_fileno
+                })
+        
             except BlockingIOError as e:
                 if e.errno == socket.EAGAIN:
-                    # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{listener_fileno:3}] accept EAGAIN")
                     pass
                 else:
                     raise e
@@ -314,13 +353,17 @@ class EpollServer():
                     try:
                         temp_recv_bytes = client_socket.recv(self.__buffer_size)
                         if temp_recv_bytes == None or temp_recv_bytes == -1 or temp_recv_bytes == b'':
-                            # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{client_fileno:3}] recv break :'{temp_recv_bytes}'")
+                            if self.__is_debug_mode.value:
+                                self.__recv_queue.put_nowait({
+                                    "type" : "debug",
+                                    "message" : f"[{client_fileno}] recv break :'{temp_recv_bytes}'"
+                                })
+                        
                             is_connect = False
                         else:
                             recv_bytes += temp_recv_bytes
                             
                     except ConnectionError as e:
-                        # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{client_fileno:3}] ConnectionError {e}")
                         pass
                     
                     except OSError as e:
@@ -338,11 +381,14 @@ class EpollServer():
                             pass
                         except OSError as e:
                             if e.errno == errno.EBADF:
-                                # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{client_fileno:3}] EBADF recv modify")
                                 pass
 
                     if recv_bytes:
-                        self.__recv_queue.put_nowait((client_fileno, recv_bytes))
+                        self.__recv_queue.put_nowait({
+                            "type" : "recv",
+                            "fileno" : client_fileno,
+                            "bytes" : recv_bytes
+                        })
                         
         return is_connect
     
@@ -358,7 +404,6 @@ class EpollServer():
                     if 0<send_length:
                         self.__sending_buffer_by_fileno[client_fileno] = self.__sending_buffer_by_fileno[client_fileno][send_length:]
                 except ConnectionError as e:
-                    # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{client_fileno:3}] ConnectionError {e}")
                     pass
                 
                 except BlockingIOError as e:
@@ -370,7 +415,7 @@ class EpollServer():
                 except OSError as e:
                     if e.errno == errno.EBADF:
                         is_connect = False
-                        # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{client_fileno:3}] EBADF send")
+                        
                     else:
                         raise e
                     
@@ -387,19 +432,17 @@ class EpollServer():
                 except OSError as e:
                     if e.errno == errno.EBADF:
                         is_connect = False
-                        # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{client_fileno:3}] EBADF send modify")
+                        
         return is_connect
                 
     def __epoll_thread_function(self):
         __is_running = True
         tid = threading.get_ident()
-        # print(f"{datetime.now()} [{tid}:TID] Start Epoll Work")
         try:
             while __is_running:
                 events = self.__epoll.poll()
                 for detect_fileno, detect_event in events:
                     if detect_event & select.EPOLLPRI:
-                        # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{detect_fileno:3}] EPOLLPRI [{detect_event:#06x} & select.EPOLLPRI]")
                         pass
                     if detect_fileno == self.__close_event_listener.fileno():
                         self.__close_event_listener.send(tid.to_bytes(32, 'big'))
@@ -407,7 +450,6 @@ class EpollServer():
                         
                     elif detect_fileno in self.__listener_by_fileno:
                         if detect_event & (select.EPOLLHUP | select.EPOLLRDHUP):
-                            # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{detect_fileno:3}] Listener HUP")
                             self.__shutdown_clients_by_listener(detect_fileno)
                             if self.__unregister(detect_fileno):
                                 self.__close_listener(detect_fileno)
@@ -417,9 +459,12 @@ class EpollServer():
                             self.__epoll_accept(detect_fileno)
                         
                         else:
-                            # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{detect_fileno:3}] listen event else [{detect_event:#06x}]..?")
-                            pass
-                    
+                            if self.__is_debug_mode.value:
+                                self.__recv_queue.put_nowait({
+                                    "type" : "debug",
+                                    "message" : f"listener got unknown event : {detect_event:#06x}"
+                                })
+                        
                     elif detect_fileno in self.__client_by_fileno:
                         if detect_event & select.EPOLLOUT:
                             if self.__epoll_send(detect_fileno) == False:
@@ -439,11 +484,15 @@ class EpollServer():
                                 self.__remove_client(detect_fileno)
                             
                     else:
-                        # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{detect_fileno:3}] Unknown Fileno. {detect_event:#06x}, exist:{detect_fileno in self.__client_by_fileno}")
-                        pass
+                        if self.__is_debug_mode.value:
+                            self.__recv_queue.put_nowait({
+                                "type" : "debug",
+                                "message" : f"[{detect_fileno:3}] Unknown Fileno. {detect_event:#06x}, exist:{detect_fileno in self.__client_by_fileno}"
+                            })
                     
         except Exception as e:
-            # print(e, traceback.format_exc())
-            pass
-        
-        # print(f"{datetime.now()} [{tid}:TID] Finish Epoll Work")
+            if self.__is_debug_mode.value:
+                self.__recv_queue.put_nowait({
+                    "type" : "debug",
+                    "message" : f"Exception in epoll_thread_function.\n{e}.\n{traceback.format_exc()}"
+                })
