@@ -100,14 +100,14 @@ class EpollServer():
         dict\n
         Error or Close if return is None\n
         dict['type'] : 'accept', 'recv', 'debug', 'close_client'\n
-        if dict['type'] == 'accept'
+        if dict['type'] == 'accept':
             dict['fileno'] (int) : socket fileno
-        elif dict['type'] == 'recv'
+        elif dict['type'] == 'recv':
             dict['fileno'] (int) : socket fileno
             dict['bytes'] (bytes) : receive bytes
-        elif dict['type'] == 'debug'
+        elif dict['type'] == 'debug':
             dict['message'] (str) : debug message
-        elif dict['type'] == 'close_client'
+        elif dict['type'] == 'close_client':
             dict['fileno'] (int) : socket fileno
             
         '''
@@ -466,22 +466,26 @@ class EpollServer():
                                 })
                         
                     elif detect_fileno in self.__client_by_fileno:
+                        unregistered = False
                         if detect_event & select.EPOLLOUT:
                             if self.__epoll_send(detect_fileno) == False:
                                 if self.__unregister(detect_fileno):
+                                    unregistered = True
                                     self.__close_client(detect_fileno)
                                     self.__remove_client(detect_fileno)
                         
                         if detect_event & select.EPOLLIN:
                             if self.__epoll_recv(detect_fileno) == False:
                                 if self.__unregister(detect_fileno):
+                                    unregistered = True
                                     self.__close_client(detect_fileno)
                                     self.__remove_client(detect_fileno)
                         
                         if detect_event & (select.EPOLLHUP | select.EPOLLRDHUP):
-                            if self.__unregister(detect_fileno):
-                                self.__close_client(detect_fileno)
-                                self.__remove_client(detect_fileno)
+                            if not unregistered:
+                                if self.__unregister(detect_fileno):
+                                    self.__close_client(detect_fileno)
+                                    self.__remove_client(detect_fileno)
                             
                     else:
                         if self.__is_debug_mode.value:
