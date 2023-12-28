@@ -13,6 +13,8 @@ class RelayServer():
     def __init__(self) -> None:
         self.__buffer_size = 8196
         self.__is_running = multiprocessing.Value(ctypes.c_bool, False)
+        self.__message_queue = None
+        
         self.__running_threads = []
         self.__running_thread_by_tid = collections.defaultdict(threading.Thread)
         
@@ -73,17 +75,9 @@ class RelayServer():
             self.__epoll.register(listener_fileno, self.__listener_eventmask)
             self.__registered_eventmask_by_fileno.update({listener_fileno : self.__listener_eventmask})
 
-    def __unlisten(self, ip:str, port:int):
-        try:
-            listener = self.__listener_by_ip_port.get(f"{ip}:{port}")
-            if listener:
-                listener.shutdown(socket.SHUT_RDWR)
-        except Exception as e:
-            # print(e)
-            pass
-
-    def start(self, count_threads:int=1):
+    def start(self, count_threads:int=1, message_queue:queue.Queue = None ):
         self.__is_running.value = True
+        self.__message_queue = message_queue
         
         self.__epoll = select.epoll()
         self.__close_event, self.__close_event_listener = socket.socketpair()
@@ -111,19 +105,32 @@ class RelayServer():
             self.__epoll.modify(socket_fileno, self.__send_recv_eventmask)
         
         except KeyError:
-            # print(f"[{socket_fileno}] send KeyError")
-            pass
-        
+            if self.__message_queue:
+                self.__message_queue.put_nowait({
+                    "type" : "debug",
+                    "message" : f"[{socket_fileno}] send KeyError.\n{traceback.format_exc()}"
+                })
+            
         except FileNotFoundError:
-            # print(f"[{socket_fileno}] send FileNotFoundError self.__epoll.modify")
-            pass
-        
+            if self.__message_queue:
+                self.__message_queue.put_nowait({
+                    "type" : "debug",
+                    "message" : f"[{socket_fileno}] send FileNotFoundError.\n{traceback.format_exc()}"
+                })
+            
         except OSError as e:
             if e.errno == errno.EBADF:
-                # print(f"[{socket_fileno}] send e.errno == errno.EBADF self.__epoll.modify")
                 pass
             else:
                 raise e
+            
+        except Exception as e:
+            if self.__message_queue:
+                self.__message_queue.put_nowait({
+                    "type" : "debug",
+                    "message" : f"[{socket_fileno}] send Exception: {e}.\n{traceback.format_exc()}"
+                })
+            
     
     def join(self):
         for t in self.__running_threads:
@@ -132,6 +139,8 @@ class RelayServer():
                 
     def close(self):
         self.__is_running.value = False
+        if self.__message_queue:
+            self.__message_queue.put_nowait(None)
         self.__shutdown_listeners()
         
         for _ in self.__running_threads:
@@ -168,7 +177,7 @@ class RelayServer():
         
     def __remove_listener(self, listener_fileno:int):
         try:
-            listener = self.__listener_by_fileno.pop(listener_fileno)
+            _ = self.__listener_by_fileno.pop(listener_fileno)
         except KeyError:
             pass
     
@@ -181,18 +190,33 @@ class RelayServer():
             # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{socket_fileno:3}] __unregister")
         
         except KeyError:
-            # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{detect_fileno:3}] __unregister KeyError")
-            pass
-        
+            if self.__message_queue:
+                self.__message_queue.put_nowait({
+                    "type" : "debug",
+                    "message" : f"[{socket_fileno}] __unregister KeyError.\n{traceback.format_exc()}"
+                })
+            
         except FileNotFoundError:
-            # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{socket_fileno:3}] __unregister FileNotFoundError")
-            pass
+            if self.__message_queue:
+                self.__message_queue.put_nowait({
+                    "type" : "debug",
+                    "message" : f"[{socket_fileno}] __unregister FileNotFoundError.\n{traceback.format_exc()}"
+                })
+            
         except OSError as e:
             if e.errno == errno.EBADF:
                 # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{socket_fileno:3}] __unregister EBADF")
                 pass
             else:
                 raise e
+            
+        except Exception as e:
+            if self.__message_queue:
+                self.__message_queue.put_nowait({
+                    "type" : "debug",
+                    "message" : f"[{socket_fileno}] send Exception: {e}.\n{traceback.format_exc()}"
+                })
+        
         return result
         
     def __shutdown_clients_by_listener(self, listener_fileno:int):
@@ -215,6 +239,13 @@ class RelayServer():
                     pass
                 else:
                     raise e
+            except Exception as e:
+                if self.__message_queue:
+                    self.__message_queue.put_nowait({
+                        "type" : "debug",
+                        "message" : f"[{socket_fileno}] send Exception: {e}.\n{traceback.format_exc()}"
+                    })
+            
     
     def __close_client(self, client_fileno:int):
         client_socket = self.__client_by_fileno.get(client_fileno)

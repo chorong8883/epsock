@@ -144,6 +144,13 @@ class EpollServer():
                     "type" : "debug",
                     "message" : f"[{socket_fileno}] send FileNotFoundError.\n{traceback.format_exc()}"
                 })
+                
+        except PermissionError:
+            if self.__is_debug_mode.value:
+                self.__recv_queue.put_nowait({
+                    "type" : "debug",
+                    "message" : f"[{socket_fileno}] send PermissionError.\n{traceback.format_exc()}"
+                })
             
         except OSError as e:
             if e.errno == errno.EBADF:
