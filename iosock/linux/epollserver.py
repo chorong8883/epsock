@@ -406,11 +406,11 @@ class EpollServer():
             is_connect = True
             client_socket = self.__client_by_fileno.get(client_fileno)
             send_lock = self.__send_lock_by_fileno.get(client_fileno)
+            send_buffer_lock = self.__send_buffer_lock_by_fileno.get(client_fileno)
             
             if send_lock is not None and client_socket is not None:
                 with send_lock:
                     send_buffer = b''
-                    send_buffer_lock = self.__send_buffer_lock_by_fileno.get(client_fileno)
                     if send_buffer_lock:
                         with send_buffer_lock:
                             send_buffer = self.__send_buffer_by_fileno.get(client_fileno)
@@ -422,7 +422,6 @@ class EpollServer():
                             try:
                                 sent_length = client_socket.send(send_buffer)
                                 if 0 < sent_length:
-                                    send_buffer_lock = self.__send_buffer_lock_by_fileno.get(client_fileno)
                                     if send_buffer_lock:
                                         with send_buffer_lock:
                                             self.__send_buffer_by_fileno.update({client_fileno : send_buffer[sent_length:]})

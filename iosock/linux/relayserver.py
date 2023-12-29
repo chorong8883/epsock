@@ -177,14 +177,17 @@ class RelayServer():
             pass
         except OSError as e:
             if e.errno == errno.EBADF:
-                # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{listener_fileno:3}] __close_listener")
                 pass
             else:
                 raise e
         listener = self.__listener_by_fileno.get(listener_fileno)
         if listener:
             listener.close()
-            # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{listener_fileno:3}] Listner Close()")
+            if self.__message_queue:
+                self.__message_queue.put_nowait({
+                    "type" : "debug",
+                    "message" : f"[{listener_fileno:3}] Listner Close()"
+                })
         
     def __remove_listener(self, listener_fileno:int):
         try:
@@ -198,8 +201,12 @@ class RelayServer():
             _ = self.__registered_eventmask_by_fileno.pop(socket_fileno)
             self.__epoll.unregister(socket_fileno)
             result = True
-            # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{socket_fileno:3}] __unregister")
-        
+            if self.__message_queue:
+                self.__message_queue.put_nowait({
+                    "type" : "debug",
+                    "message" : f"[{socket_fileno:3}] epoll unregister."
+                })
+
         except KeyError:
             if self.__message_queue:
                 self.__message_queue.put_nowait({
@@ -216,7 +223,6 @@ class RelayServer():
             
         except OSError as e:
             if e.errno == errno.EBADF:
-                # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{socket_fileno:3}] __unregister EBADF")
                 pass
             else:
                 raise e
@@ -242,11 +248,9 @@ class RelayServer():
             try:
                 _socket.shutdown(socket.SHUT_RDWR)
             except ConnectionError:
-                # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{socket_fileno:3}] ConnectionError {e}")
                 pass
             except OSError as e:
                 if e.errno == errno.ENOTCONN: # errno 107
-                    # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{socket_fileno:3}] ENOTCONN")
                     pass
                 else:
                     raise e
@@ -262,7 +266,11 @@ class RelayServer():
         client_socket = self.__client_by_fileno.get(client_fileno)
         if client_socket:
             client_socket.close()
-            # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{client_fileno:3}] Client Closed.")
+            if self.__message_queue:
+                self.__message_queue.put_nowait({
+                    "type" : "debug",
+                    "message" : f"[{client_fileno:3}] Client Closed."
+                })
 
     def __remove_client(self, client_fileno:int):
         try: _ = self.__send_lock_by_fileno.pop(client_fileno)
@@ -296,7 +304,12 @@ class RelayServer():
             client_socket = None
             try:
                 client_socket, address = listener.accept()
-                # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{listener_fileno:3}] accept {client_socket.fileno():3}:{address}")
+                if self.__message_queue:
+                    self.__message_queue.put_nowait({
+                        "type" : "debug",
+                        "message" : f"accept {client_socket.fileno():3}:{address}"
+                    })
+                
                 client_socket_fileno = client_socket.fileno()
                 client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 client_socket.setblocking(False)
@@ -312,11 +325,10 @@ class RelayServer():
                 self.__client_fileno_dict_by_listener_fileno[listener_fileno][client_socket_fileno] = True
                 self.__listener_fileno_by_client_fileno.update({client_socket_fileno : listener_fileno})
                 
-                self.__registered_eventmask_by_fileno[client_socket_fileno] = self.__recv_eventmask
+                self.__registered_eventmask_by_fileno.update({client_socket_fileno : self.__recv_eventmask})
                 self.__epoll.register(client_socket, self.__recv_eventmask)
             except BlockingIOError as e:
                 if e.errno == socket.EAGAIN:
-                    # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{listener_fileno:3}] accept EAGAIN")
                     return
                 else:
                     raise e
@@ -339,7 +351,13 @@ class RelayServer():
                         relay_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                         relay_socket.setblocking(False)
                         relay_socket_fileno = relay_socket.fileno()
-                        self.__registered_eventmask_by_fileno[relay_socket_fileno] = self.__recv_eventmask
+                        if self.__message_queue:
+                            self.__message_queue.put_nowait({
+                                "type" : "debug",
+                                "message" : f"Client fileno:{client_socket.fileno()} -> Relay fileno:{relay_socket_fileno}"
+                            })
+                            
+                        self.__registered_eventmask_by_fileno.update({relay_socket_fileno : self.__recv_eventmask})
                         self.__epoll.register(relay_socket_fileno, self.__recv_eventmask)
                         
                         self.__socket_by_fileno.update({relay_socket_fileno : relay_socket})
@@ -352,7 +370,6 @@ class RelayServer():
                         self.__send_buffer_lock_by_fileno.update({relay_socket_fileno : threading.Lock()})
                         self.__send_buffer_by_fileno.update({relay_socket_fileno : b''})
                     except socket.error as e:
-                        # print('accept', e)
                         disconnect_client = True
                 else:
                     disconnect_client = True
@@ -364,7 +381,7 @@ class RelayServer():
     def relay(self, fromip:str, fromport:int, toip:str, toport:int, check_relay_function=None):
         self.__listen(fromip, fromport)
         self.check_relay_function = check_relay_function
-        self.__relay_addr_by_listener_addr[f"{fromip}:{fromport}"] = f"{toip}:{toport}"
+        self.__relay_addr_by_listener_addr.update({f"{fromip}:{fromport}" : f"{toip}:{toport}"})
     
     def __epoll_recv(self, recv_socket:socket.socket) -> bytes:
         recv_bytes = b''
@@ -378,13 +395,11 @@ class RelayServer():
                     try:
                         temp_recv_bytes = recv_socket.recv(self.__buffer_size)
                         if temp_recv_bytes == None or temp_recv_bytes == -1 or temp_recv_bytes == b'':
-                            # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{client_fileno:3}] recv break :'{temp_recv_bytes}'")
                             is_connect = False
                         else:
                             recv_bytes += temp_recv_bytes
                             
                     except ConnectionError as e:
-                        # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{recv_socket_fileno:3}] recv ConnectionError {e}")
                         pass
                     except OSError as e:
                         if e.errno == socket.EAGAIN:
@@ -401,7 +416,6 @@ class RelayServer():
                             pass
                         except OSError as e:
                             if e.errno == errno.EBADF:
-                                # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{recv_socket_fileno:3}] EBADF recv modify")
                                 pass
 
         return recv_bytes
@@ -409,28 +423,37 @@ class RelayServer():
     def __epoll_send(self, client_fileno:int):
         is_connect = True
         try:
-            client_socket = self.__client_by_fileno.get(client_fileno)
+            client_socket = self.__socket_by_fileno.get(client_fileno)
             send_lock = self.__send_lock_by_fileno.get(client_fileno)
+            send_buffer_lock = self.__send_buffer_lock_by_fileno.get(client_fileno)
             
             if send_lock is not None and client_socket is not None:
                 with send_lock:
                     send_buffer = b''
-                    send_buffer_lock = self.__send_buffer_lock_by_fileno.get(client_fileno)
                     if send_buffer_lock:
                         with send_buffer_lock:
                             send_buffer = self.__send_buffer_by_fileno.get(client_fileno)
                     else:
-                        is_connect = False
-        
+                        if self.__message_queue:
+                            self.__message_queue.put_nowait({
+                                "type" : "debug",
+                                "message" : f"[{client_fileno}] is_connect = False send_buffer_lock is {send_buffer_lock}"
+                            })
+                    
                     if send_buffer is not None:
                         if send_buffer != b'':
                             try:
                                 sent_length = client_socket.send(send_buffer)
                                 if 0 < sent_length:
-                                    send_buffer_lock = self.__send_buffer_lock_by_fileno.get(client_fileno)
                                     if send_buffer_lock:
                                         with send_buffer_lock:
                                             self.__send_buffer_by_fileno.update({client_fileno : send_buffer[sent_length:]})
+                                    else:
+                                        if self.__message_queue:
+                                            self.__message_queue.put_nowait({
+                                                "type" : "debug",
+                                                "message" : f"[{client_fileno}] is_connect = False send_buffer_lock is {send_buffer_lock}"
+                                            })
                         
                             except ConnectionError as e:
                                 pass
@@ -448,24 +471,35 @@ class RelayServer():
                                 else:
                                     raise e
                     else:
+                        if self.__message_queue:
+                            self.__message_queue.put_nowait({
+                                "type" : "debug",
+                                "message" : f"[{client_fileno}] is_connect = False send_buffer is {send_buffer}"
+                            })
+                        
                         is_connect = False
 
             else:
+                if self.__message_queue:
+                    self.__message_queue.put_nowait({
+                        "type" : "debug",
+                        "message" : f"[{client_fileno}] is_connect = False send_lock is {send_lock} and client_socket is {client_socket}"
+                    })
                 is_connect = False
         
             try:
+                remain_buffer = b''
                 send_buffer_lock = self.__send_buffer_lock_by_fileno.get(client_fileno)
                 if send_buffer_lock:
-                    remain_buffer = b''
                     with send_buffer_lock:
                         remain_buffer = self.__send_buffer_by_fileno.get(client_fileno)
-                    registered_eventmask = self.__registered_eventmask_by_fileno.get(client_fileno)
-                    
-                    if (remain_buffer is not None and registered_eventmask is not None) and\
-                        remain_buffer == b'' and\
-                        registered_eventmask != self.__recv_eventmask:
-                        self.__registered_eventmask_by_fileno.update({client_fileno : self.__recv_eventmask})
-                        self.__epoll.modify(client_fileno, self.__recv_eventmask)
+                
+                registered_eventmask = self.__registered_eventmask_by_fileno.get(client_fileno)
+                if (remain_buffer is not None and registered_eventmask is not None) and\
+                    remain_buffer == b'' and\
+                    registered_eventmask != self.__recv_eventmask:
+                    self.__registered_eventmask_by_fileno.update({client_fileno : self.__recv_eventmask})
+                    self.__epoll.modify(client_fileno, self.__recv_eventmask)
             
             except OSError as e:
                 if e.errno == errno.EBADF:
@@ -485,21 +519,29 @@ class RelayServer():
     def __epoll_thread_function(self):
         __is_running = True
         tid = threading.get_ident()
-        # print(f"{datetime.now()} [{tid}:TID] Start Epoll Work")
+        if self.__message_queue:
+            self.__message_queue.put_nowait({
+                "type" : "debug",
+                "message" : f"Start Epoll Work"
+            })
+        
         try:
             while __is_running:
                 events = self.__epoll.poll()
                 for detect_fileno, detect_event in events:
                     if detect_event & select.EPOLLPRI:
-                        # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{detect_fileno:3}] EPOLLPRI [{detect_event:#06x} & select.EPOLLPRI]")
-                        pass
+                        if self.__message_queue:
+                            self.__message_queue.put_nowait({
+                                "type" : "debug",
+                                "message" : f"EPOLLPRI [{detect_event:#06x} & select.EPOLLPRI]"
+                            })
+                        
                     if detect_fileno == self.__close_event_listener.fileno():
                         self.__close_event_listener.send(tid.to_bytes(32, 'big'))
                         __is_running = False
                         
                     elif detect_fileno in self.__listener_by_fileno:
                         if detect_event & (select.EPOLLHUP | select.EPOLLRDHUP):
-                            # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{detect_fileno:3}] Listener HUP")
                             self.__shutdown_clients_by_listener(detect_fileno)
                             if self.__unregister(detect_fileno):
                                 self.__close_listener(detect_fileno)
@@ -509,8 +551,12 @@ class RelayServer():
                             self.__epoll_accept(detect_fileno)
                         
                         else:
-                            # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{detect_fileno:3}] listen event else [{detect_event:#06x}]..?")
-                            pass
+                            if self.__message_queue:
+                                self.__message_queue.put_nowait({
+                                    "type" : "debug",
+                                    "message" : f"listen event else [{detect_event:#06x}]..?"
+                                })
+                            
                     else:
                         if detect_event & select.EPOLLOUT:
                             if self.__epoll_send(detect_fileno) == False:
@@ -558,11 +604,22 @@ class RelayServer():
                                 self.__remove_client(detect_fileno)
                             
                         elif not detect_event & (select.EPOLLIN | select.EPOLLOUT):
-                            # print(f"{datetime.now()} [{threading.get_ident()}:TID] [{detect_fileno:3}] Unknown Event. {detect_event:#06x}, exist:{detect_fileno in self.__client_by_fileno}")
-                            pass
-                        
+                            if self.__message_queue:
+                                self.__message_queue.put_nowait({
+                                    "type" : "debug",
+                                    "message" : f"Unknown Event. {detect_event:#06x}, exist:{detect_fileno in self.__client_by_fileno}"
+                                })
+                            
         except Exception as e:
-            # print(e, traceback.format_exc())
-            pass
-        
-        # print(f"{datetime.now()} [{tid}:TID] Finish Epoll Work")
+            if self.__message_queue:
+                self.__message_queue.put_nowait({
+                    "type" : "debug",
+                    "message" : f"{e}, {traceback.format_exc()}"
+                })
+            
+        if self.__message_queue:
+            self.__message_queue.put_nowait({
+                "type" : "debug",
+                "message" : f"Finish Epoll Work"
+            })
+            
