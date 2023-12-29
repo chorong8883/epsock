@@ -277,37 +277,46 @@ class EpollServer():
         if client_socket:
             client_socket.close()
         
-        self.__recv_queue.put_nowait({
-            "type" : "close_client",
-            "fileno" : client_fileno
-        })
+            self.__recv_queue.put_nowait({
+                "type" : "close_client",
+                "fileno" : client_fileno
+            })
     
             
     def __remove_client(self, client_fileno:int):
-        try: _ = self.__send_lock_by_fileno.pop(client_fileno)
-        except KeyError: pass
-        try: _ = self.__recv_lock_by_fileno.pop(client_fileno)
-        except KeyError: pass
-        try: _ = self.__client_by_fileno.pop(client_fileno)
-        except KeyError: pass
-        
-        len_remain_send_buffer = 0
-        try: 
-            remain_send_buffer = self.__send_buffer_by_fileno.pop(client_fileno)
-            len_remain_send_buffer = len(remain_send_buffer)
-        except KeyError: pass
-        
         try:
-            listener_fileno = self.__listener_fileno_by_client_fileno.pop(client_fileno)
-            _ = self.__client_fileno_dict_by_listener_fileno[listener_fileno].pop(client_fileno)
-        except KeyError: pass
-        
-        if 0 < len_remain_send_buffer:
+            try: _ = self.__send_lock_by_fileno.pop(client_fileno)
+            except KeyError: pass
+            try: _ = self.__recv_lock_by_fileno.pop(client_fileno)
+            except KeyError: pass
+            try: _ = self.__client_by_fileno.pop(client_fileno)
+            except KeyError: pass
+            
+            len_remain_send_buffer = 0
+            try: 
+                remain_send_buffer = self.__send_buffer_by_fileno.pop(client_fileno)
+                len_remain_send_buffer = len(remain_send_buffer)
+            except KeyError: pass
+            
+            try:
+                listener_fileno = self.__listener_fileno_by_client_fileno.pop(client_fileno)
+                _ = self.__client_fileno_dict_by_listener_fileno[listener_fileno].pop(client_fileno)
+            except KeyError: pass
+            
+            if 0 < len_remain_send_buffer:
+                if self.__is_debug_mode.value:
+                    self.__recv_queue.put_nowait({
+                        "type" : "debug",
+                        "message" : f"[{client_fileno}] Removed. But send buffer remain:{len_remain_send_buffer} bytes."
+                    })
+        except Exception as e:
             if self.__is_debug_mode.value:
                 self.__recv_queue.put_nowait({
                     "type" : "debug",
-                    "message" : f"[{client_fileno}] Removed. But send buffer remain:{len_remain_send_buffer} bytes."
+                    "message" : f"[{client_fileno}] Remove Client Exception:{e}.\n{traceback.format_exc()}"
                 })
+        
+        
         
     
     def __epoll_accept(self, listener_fileno:int):
