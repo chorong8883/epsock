@@ -223,26 +223,19 @@ class EpollServer():
         result = False
         try:
             _ = self.__registered_eventmask_by_fileno.pop(socket_fileno)
+        except KeyError:
+            pass
+        
+        try:
             self.__epoll.unregister(socket_fileno)
             result = True
-            
-        except KeyError:
-            if self.__is_debug_mode.value:
-                self.__recv_queue.put_nowait({
-                    "type" : "debug",
-                    "message" : f"[{socket_fileno}] unregister KeyError.\n{traceback.format_exc()}"
-                })
-            
+        
         except FileNotFoundError:
-            if self.__is_debug_mode.value:
-                self.__recv_queue.put_nowait({
-                    "type" : "debug",
-                    "message" : f"[{socket_fileno}] unregister FileNotFoundError.\n{traceback.format_exc()}"
-                })
+            result = True
             
         except OSError as e:
             if e.errno == errno.EBADF:
-                pass
+                result = True
             else:
                 raise e
         return result
