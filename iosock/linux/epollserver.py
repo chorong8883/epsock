@@ -509,6 +509,12 @@ class EpollServer():
                         unregistered = False
                         if detect_event & select.EPOLLOUT:
                             if self.__epoll_send(detect_fileno) == False:
+                                if self.__is_debug_mode.value:
+                                    self.__recv_queue.put_nowait({
+                                        "type" : "debug",
+                                        "message" : f"self.__epoll_send False"
+                                    })
+                            
                                 if self.__unregister(detect_fileno):
                                     unregistered = True
                                     self.__close_client(detect_fileno)
@@ -516,12 +522,24 @@ class EpollServer():
                         
                         if detect_event & select.EPOLLIN:
                             if self.__epoll_recv(detect_fileno) == False:
+                                if self.__is_debug_mode.value:
+                                    self.__recv_queue.put_nowait({
+                                        "type" : "debug",
+                                        "message" : f"self.__epoll_recv False"
+                                    })
+                            
                                 if self.__unregister(detect_fileno):
                                     unregistered = True
                                     self.__close_client(detect_fileno)
                                     self.__remove_client(detect_fileno)
                         
                         if detect_event & (select.EPOLLHUP | select.EPOLLRDHUP):
+                            if self.__is_debug_mode.value:
+                                self.__recv_queue.put_nowait({
+                                    "type" : "debug",
+                                    "message" : f"[{detect_fileno}] detect_event & (select.EPOLLHUP | select.EPOLLRDHUP)"
+                                })
+                        
                             if not unregistered:
                                 if self.__unregister(detect_fileno):
                                     self.__close_client(detect_fileno)
