@@ -25,8 +25,10 @@ class EpollServer():
         self.__registered_eventmask_by_fileno = collections.defaultdict(int)
         self.__send_lock_by_fileno = collections.defaultdict(threading.Lock)
         self.__recv_lock_by_fileno = collections.defaultdict(threading.Lock)
-        self.__send_buffer_queue_by_fileno = collections.defaultdict(queue.Queue)
-        self.__sending_buffer_by_fileno = collections.defaultdict(bytes)
+        
+        self.__send_buffer_by_fileno = collections.defaultdict(bytes)
+        self.__send_buffer_lock_by_fileno = collections.defaultdict(threading.Lock)
+        
         self.__client_fileno_dict_by_listener_fileno = collections.defaultdict(dict)
         
         self.__recv_queue = queue.Queue()
@@ -35,7 +37,7 @@ class EpollServer():
         
         self.__listener_eventmask = select.EPOLLIN | select.EPOLLPRI | select.EPOLLHUP | select.EPOLLRDHUP | select.EPOLLET
         self.__recv_eventmask = select.EPOLLIN  | select.EPOLLHUP | select.EPOLLRDHUP | select.EPOLLET
-        self.__send_recv_eventmask = select.EPOLLIN | select.EPOLLOUT | select.EPOLLHUP | select.EPOLLRDHUP | select.EPOLLET
+        self.__send_recv_eventmask = select.EPOLLIN | select.EPOLLOUT | select.EPOLLHUP | select.EPOLLRDHUP
         self.__closer_eventmask = select.EPOLLIN | select.EPOLLPRI | select.EPOLLHUP | select.EPOLLRDHUP | select.EPOLLET
     
     def listen(self, ip:str, port:int, backlog:int = 5):
@@ -57,8 +59,7 @@ class EpollServer():
         
         self.__listener_by_ip_port.update({f"{ip}:{port}":listener})
         self.__listener_by_fileno.update({listener_fileno : listener})
-        self.__send_buffer_queue_by_fileno.update({listener_fileno : queue.Queue()})
-        self.__sending_buffer_by_fileno.update({listener_fileno : b''})
+        
         self.__client_fileno_dict_by_listener_fileno.update({listener_fileno : {}})
         
         if self.__epoll and not self.__epoll.closed:
@@ -125,38 +126,50 @@ class EpollServer():
             self.__recv_queue.put_nowait(None)
             return None
     
-    def send(self, socket_fileno:int, data:bytes = None):
-        try:
-            self.__send_buffer_queue_by_fileno[socket_fileno].put_nowait(data)
-            self.__registered_eventmask_by_fileno[socket_fileno] = self.__send_recv_eventmask
-            self.__epoll.modify(socket_fileno, self.__send_recv_eventmask)
-            
-        except KeyError:
-            if self.__is_debug_mode.value:
-                self.__recv_queue.put_nowait({
-                    "type" : "debug",
-                    "message" : f"[{socket_fileno}] send KeyError.\n{traceback.format_exc()}"
-                })
-            
-        except FileNotFoundError:
-            if self.__is_debug_mode.value:
-                self.__recv_queue.put_nowait({
-                    "type" : "debug",
-                    "message" : f"[{socket_fileno}] send FileNotFoundError.\n{traceback.format_exc()}"
-                })
+    def send(self, socket_fileno:int, data:bytes):
+        if data is not None and data != b'':
+            try:
+                send_buffer_lock = self.__send_buffer_lock_by_fileno.get(socket_fileno)
+                if send_buffer_lock:
+                    with send_buffer_lock:
+                        send_buffer = self.__send_buffer_by_fileno.get(socket_fileno)
+                        if send_buffer is not None:
+                            self.__send_buffer_by_fileno.update({socket_fileno : send_buffer + data})
+                    
+                send_lock = self.__send_lock_by_fileno.get(socket_fileno)
+                if send_lock:
+                    with send_lock:
+                        registered_eventmask = self.__registered_eventmask_by_fileno.get(socket_fileno)
+                        if registered_eventmask is not None and registered_eventmask != self.__send_recv_eventmask:
+                            self.__registered_eventmask_by_fileno.update({socket_fileno : self.__send_recv_eventmask})
+                            self.__epoll.modify(socket_fileno, self.__send_recv_eventmask)
                 
-        except PermissionError:
-            if self.__is_debug_mode.value:
-                self.__recv_queue.put_nowait({
-                    "type" : "debug",
-                    "message" : f"[{socket_fileno}] send PermissionError.\n{traceback.format_exc()}"
-                })
-            
-        except OSError as e:
-            if e.errno == errno.EBADF:
-                pass
-            else:
-                raise e
+            except KeyError:
+                if self.__is_debug_mode.value:
+                    self.__recv_queue.put_nowait({
+                        "type" : "debug",
+                        "message" : f"[{socket_fileno}] send KeyError.\n{traceback.format_exc()}"
+                    })
+                
+            except FileNotFoundError:
+                if self.__is_debug_mode.value:
+                    self.__recv_queue.put_nowait({
+                        "type" : "debug",
+                        "message" : f"[{socket_fileno}] send FileNotFoundError.\n{traceback.format_exc()}"
+                    })
+                    
+            except PermissionError:
+                if self.__is_debug_mode.value:
+                    self.__recv_queue.put_nowait({
+                        "type" : "debug",
+                        "message" : f"[{socket_fileno}] send PermissionError.\n{traceback.format_exc()}"
+                    })
+                
+            except OSError as e:
+                if e.errno == errno.EBADF:
+                    pass
+                else:
+                    raise e
     
     def join(self):
         for t in self.__running_threads:
@@ -285,21 +298,10 @@ class EpollServer():
         try: _ = self.__client_by_fileno.pop(client_fileno)
         except KeyError: pass
         
-        #remain send buffer queue
-        len_send_buffer_queue = -1
-        send_buffer_queue:queue.Queue = None
-        try:
-            send_buffer_queue = self.__send_buffer_queue_by_fileno.pop(client_fileno)
-            len_send_buffer_queue = len(send_buffer_queue.queue)
-            while not send_buffer_queue.empty():
-                _ = send_buffer_queue.get_nowait()
-        except KeyError: pass
-        
-        #remain send buffer 
-        len_sending_buffer = 0
+        len_remain_send_buffer = 0
         try: 
-            sending_buffer = self.__sending_buffer_by_fileno.pop(client_fileno)
-            len_sending_buffer = len(sending_buffer)
+            remain_send_buffer = self.__send_buffer_by_fileno.pop(client_fileno)
+            len_remain_send_buffer = len(remain_send_buffer)
         except KeyError: pass
         
         try:
@@ -307,11 +309,11 @@ class EpollServer():
             _ = self.__client_fileno_dict_by_listener_fileno[listener_fileno].pop(client_fileno)
         except KeyError: pass
         
-        if 0 < len_send_buffer_queue:
+        if 0 < len_remain_send_buffer:
             if self.__is_debug_mode.value:
                 self.__recv_queue.put_nowait({
                     "type" : "debug",
-                    "message" : f"[{client_fileno}] Removed. But send buffer remain:{len_sending_buffer} bytes. queue remain:{len_send_buffer_queue}."
+                    "message" : f"[{client_fileno}] Removed. But send buffer remain:{len_remain_send_buffer} bytes."
                 })
         
     
@@ -327,8 +329,8 @@ class EpollServer():
                 self.__client_by_fileno.update({client_socket_fileno : client_socket})
                 self.__send_lock_by_fileno.update({client_socket_fileno : threading.Lock()})
                 self.__recv_lock_by_fileno.update({client_socket_fileno : threading.Lock()})
-                self.__send_buffer_queue_by_fileno.update({client_socket_fileno : queue.Queue()})
-                self.__sending_buffer_by_fileno.update({client_socket_fileno : b''})
+                self.__send_buffer_lock_by_fileno.update({client_socket_fileno : threading.Lock()})
+                self.__send_buffer_by_fileno.update({client_socket_fileno : b''})
                 if not listener_fileno in self.__client_fileno_dict_by_listener_fileno:
                     self.__client_fileno_dict_by_listener_fileno.update({listener_fileno : {}})
                 self.__client_fileno_dict_by_listener_fileno[listener_fileno][client_socket_fileno] = True
@@ -400,46 +402,73 @@ class EpollServer():
         return is_connect
     
     def __epoll_send(self, client_fileno:int):
-        is_connect = True
-        send_lock = self.__send_lock_by_fileno.get(client_fileno)
-        if send_lock:
-            with send_lock:
-                try:
-                    if self.__sending_buffer_by_fileno[client_fileno] == b'':
-                        self.__sending_buffer_by_fileno[client_fileno] = self.__send_buffer_queue_by_fileno[client_fileno].get_nowait()
-                    send_length = self.__client_by_fileno[client_fileno].send(self.__sending_buffer_by_fileno[client_fileno])
-                    if 0<send_length:
-                        self.__sending_buffer_by_fileno[client_fileno] = self.__sending_buffer_by_fileno[client_fileno][send_length:]
-                except ConnectionError as e:
-                    pass
-                
-                except BlockingIOError as e:
-                    if e.errno == socket.EAGAIN:
-                        pass
+        try:
+            is_connect = True
+            client_socket = self.__client_by_fileno.get(client_fileno)
+            send_lock = self.__send_lock_by_fileno.get(client_fileno)
+            
+            if send_lock is not None and client_socket is not None:
+                with send_lock:
+                    send_buffer = b''
+                    send_buffer_lock = self.__send_buffer_lock_by_fileno.get(client_fileno)
+                    if send_buffer_lock:
+                        with send_buffer_lock:
+                            send_buffer = self.__send_buffer_by_fileno.get(client_fileno)
                     else:
-                        raise e
-                    
-                except OSError as e:
-                    if e.errno == errno.EBADF:
                         is_connect = False
-                        
-                    else:
-                        raise e
+        
+                    if send_buffer is not None and send_buffer != b'':
+                        try:
+                            sent_length = client_socket.send(send_buffer)
+                            if 0 < sent_length:
+                                send_buffer_lock = self.__send_buffer_lock_by_fileno.get(client_fileno)
+                                if send_buffer_lock:
+                                    with send_buffer_lock:
+                                        self.__send_buffer_by_fileno.update({client_fileno : send_buffer[sent_length:]})
                     
-                except queue.Empty:
-                    pass
-                
-                try:
-                    if self.__sending_buffer_by_fileno[client_fileno] != b'' or not self.__send_buffer_queue_by_fileno[client_fileno].empty():
-                        self.__registered_eventmask_by_fileno[client_fileno] = self.__send_recv_eventmask
-                        self.__epoll.modify(client_fileno, self.__send_recv_eventmask)
+                        except ConnectionError as e:
+                            pass
+                        
+                        except BlockingIOError as e:
+                            if e.errno == socket.EAGAIN:
+                                pass
+                            else:
+                                raise e
+                            
+                        except OSError as e:
+                            if e.errno == errno.EBADF:
+                                is_connect = False
+                                
+                            else:
+                                raise e
                     else:
-                        self.__registered_eventmask_by_fileno[client_fileno] = self.__recv_eventmask
+                        is_connect = False
+
+            else:
+                is_connect = False
+        
+                
+            try:
+                send_buffer_lock = self.__send_buffer_lock_by_fileno.get(client_fileno)
+                if send_buffer_lock:
+                    remain_buffer = b''
+                    with send_buffer_lock:
+                        remain_buffer = self.__send_buffer_by_fileno.get(client_fileno)
+                    registered_eventmask = self.__registered_eventmask_by_fileno.get(client_fileno)
+                    
+                    if (remain_buffer is not None and registered_eventmask is not None) and\
+                        remain_buffer == b'' and\
+                        registered_eventmask != self.__recv_eventmask:
+                        self.__registered_eventmask_by_fileno.update({client_fileno : self.__recv_eventmask})
                         self.__epoll.modify(client_fileno, self.__recv_eventmask)
-                except OSError as e:
-                    if e.errno == errno.EBADF:
-                        is_connect = False
+            except OSError as e:
+                if e.errno == errno.EBADF:
+                    is_connect = False
                         
+        except Exception as e:
+            print(e, traceback.format_exc())
+            is_connect = False
+            
         return is_connect
                 
     def __epoll_thread_function(self):
