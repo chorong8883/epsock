@@ -422,30 +422,31 @@ class RelayServer():
                     else:
                         is_connect = False
         
-                    if send_buffer is not None and send_buffer != b'':
-                        try:
-                            sent_length = client_socket.send(send_buffer)
-                            if 0 < sent_length:
-                                send_buffer_lock = self.__send_buffer_lock_by_fileno.get(client_fileno)
-                                if send_buffer_lock:
-                                    with send_buffer_lock:
-                                        self.__send_buffer_by_fileno.update({client_fileno : send_buffer[sent_length:]})
-                    
-                        except ConnectionError as e:
-                            pass
+                    if send_buffer is not None:
+                        if send_buffer != b'':
+                            try:
+                                sent_length = client_socket.send(send_buffer)
+                                if 0 < sent_length:
+                                    send_buffer_lock = self.__send_buffer_lock_by_fileno.get(client_fileno)
+                                    if send_buffer_lock:
+                                        with send_buffer_lock:
+                                            self.__send_buffer_by_fileno.update({client_fileno : send_buffer[sent_length:]})
                         
-                        except BlockingIOError as e:
-                            if e.errno == socket.EAGAIN:
+                            except ConnectionError as e:
                                 pass
-                            else:
-                                raise e
                             
-                        except OSError as e:
-                            if e.errno == errno.EBADF:
-                                is_connect = False
+                            except BlockingIOError as e:
+                                if e.errno == socket.EAGAIN:
+                                    pass
+                                else:
+                                    raise e
                                 
-                            else:
-                                raise e
+                            except OSError as e:
+                                if e.errno == errno.EBADF:
+                                    is_connect = False
+                                    
+                                else:
+                                    raise e
                     else:
                         is_connect = False
 
