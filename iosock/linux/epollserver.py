@@ -33,7 +33,7 @@ class EpollServer():
         
         self.__recv_queue = queue.Queue()
         
-        self.__epoll : select.epoll = None
+        self.__epoll = None
         
         self.__listener_eventmask = select.EPOLLIN | select.EPOLLPRI | select.EPOLLHUP | select.EPOLLRDHUP | select.EPOLLET
         self.__recv_eventmask = select.EPOLLIN  | select.EPOLLHUP | select.EPOLLRDHUP | select.EPOLLET
@@ -99,7 +99,7 @@ class EpollServer():
         Return
         -
         dict\n
-        Error or Close if return is None\n
+        return {} if error or close \n
         dict['type'] : 'accept', 'recv', 'debug', 'close_client'\n
         if dict['type'] == 'accept':
             dict['fileno'] (int) : socket fileno
@@ -120,11 +120,11 @@ class EpollServer():
                 #for multithreading
                 self.__is_running.value = False
                 self.__recv_queue.put_nowait(None)
-                return None
+                return {}
         else:
             #for multithreading
             self.__recv_queue.put_nowait(None)
-            return None
+            return {}
     
     def send(self, socket_fileno:int, data:bytes):
         if data is not None and data != b'':
@@ -142,7 +142,8 @@ class EpollServer():
                         registered_eventmask = self.__registered_eventmask_by_fileno.get(socket_fileno)
                         if registered_eventmask is not None and registered_eventmask != self.__send_recv_eventmask:
                             self.__registered_eventmask_by_fileno.update({socket_fileno : self.__send_recv_eventmask})
-                            self.__epoll.modify(socket_fileno, self.__send_recv_eventmask)
+                            if isinstance(self.__epoll, select.epoll):
+                                self.__epoll.modify(socket_fileno, self.__send_recv_eventmask)
                 
             except KeyError:
                 if self.__is_debug_mode.value:
@@ -200,7 +201,8 @@ class EpollServer():
         
     def __close_listener(self, listener_fileno:int):
         try:
-            self.__epoll.unregister(listener_fileno)
+            if isinstance(self.__epoll, select.epoll):
+                self.__epoll.unregister(listener_fileno)
         except FileNotFoundError:
             pass
         except OSError as e:
@@ -227,8 +229,9 @@ class EpollServer():
             pass
         
         try:
-            self.__epoll.unregister(socket_fileno)
-            result = True
+            if isinstance(self.__epoll, select.epoll):
+                self.__epoll.unregister(socket_fileno)
+                result = True
         
         except FileNotFoundError:
             result = True
@@ -339,7 +342,8 @@ class EpollServer():
                 self.__listener_fileno_by_client_fileno.update({client_socket_fileno : listener_fileno})
                 
                 self.__registered_eventmask_by_fileno[client_socket_fileno] = self.__recv_eventmask
-                self.__epoll.register(client_socket, self.__recv_eventmask)
+                if isinstance(self.__epoll, select.epoll):
+                    self.__epoll.register(client_socket, self.__recv_eventmask)
                 
                 self.__recv_queue.put_nowait({
                     "type" : "accept",
@@ -387,7 +391,8 @@ class EpollServer():
 
                     if not is_eagain and is_connect:
                         try:
-                            self.__epoll.modify(client_fileno, self.__registered_eventmask_by_fileno[client_fileno])
+                            if isinstance(self.__epoll, select.epoll):
+                                self.__epoll.modify(client_fileno, self.__registered_eventmask_by_fileno[client_fileno])
                         except FileNotFoundError:
                             pass
                         except OSError as e:
@@ -416,6 +421,7 @@ class EpollServer():
                     if send_buffer_lock:
                         with send_buffer_lock:
                             send_buffer = self.__send_buffer_by_fileno.get(client_fileno)
+                            self.__send_buffer_by_fileno.update({client_fileno: b''})
                     else:
                         is_connect = False
         
@@ -426,7 +432,10 @@ class EpollServer():
                                 if 0 < sent_length:
                                     if send_buffer_lock:
                                         with send_buffer_lock:
-                                            self.__send_buffer_by_fileno.update({client_fileno : send_buffer[sent_length:]})
+                                            next_send_buffer = self.__send_buffer_by_fileno.get(client_fileno)
+                                            if next_send_buffer is None:
+                                                next_send_buffer = b''
+                                            self.__send_buffer_by_fileno.update({client_fileno : send_buffer[sent_length:] + next_send_buffer})
                         
                             except ConnectionError as e:
                                 pass
@@ -462,7 +471,8 @@ class EpollServer():
                         remain_buffer == b'' and\
                         registered_eventmask != self.__recv_eventmask:
                         self.__registered_eventmask_by_fileno.update({client_fileno : self.__recv_eventmask})
-                        self.__epoll.modify(client_fileno, self.__recv_eventmask)
+                        if isinstance(self.__epoll, select.epoll):
+                            self.__epoll.modify(client_fileno, self.__recv_eventmask)
             except OSError as e:
                 if e.errno == errno.EBADF:
                     is_connect = False
@@ -481,79 +491,80 @@ class EpollServer():
         __is_running = True
         tid = threading.get_ident()
         try:
-            while __is_running:
-                events = self.__epoll.poll()
-                for detect_fileno, detect_event in events:
-                    if detect_event & select.EPOLLPRI:
-                        pass
-                    if detect_fileno == self.__close_event_listener.fileno():
-                        self.__close_event_listener.send(tid.to_bytes(32, 'big'))
-                        __is_running = False
-                        
-                    elif detect_fileno in self.__listener_by_fileno:
-                        if detect_event & (select.EPOLLHUP | select.EPOLLRDHUP):
-                            self.__shutdown_clients_by_listener(detect_fileno)
-                            if self.__unregister(detect_fileno):
-                                self.__close_listener(detect_fileno)
-                                self.__remove_listener(detect_fileno)
+            if isinstance(self.__epoll, select.epoll):
+                while __is_running:
+                    events = self.__epoll.poll()
+                    for detect_fileno, detect_event in events:
+                        if detect_event & select.EPOLLPRI:
+                            pass
+                        if detect_fileno == self.__close_event_listener.fileno():
+                            self.__close_event_listener.send(tid.to_bytes(32, 'big'))
+                            __is_running = False
                             
-                        elif detect_event & select.EPOLLIN:
-                            self.__epoll_accept(detect_fileno)
-                        
+                        elif detect_fileno in self.__listener_by_fileno:
+                            if detect_event & (select.EPOLLHUP | select.EPOLLRDHUP):
+                                self.__shutdown_clients_by_listener(detect_fileno)
+                                if self.__unregister(detect_fileno):
+                                    self.__close_listener(detect_fileno)
+                                    self.__remove_listener(detect_fileno)
+                                
+                            elif detect_event & select.EPOLLIN:
+                                self.__epoll_accept(detect_fileno)
+                            
+                            else:
+                                if self.__is_debug_mode.value:
+                                    self.__recv_queue.put_nowait({
+                                        "type" : "debug",
+                                        "message" : f"listener got unknown event : {detect_event:#06x}"
+                                    })
+                            
+                        elif detect_fileno in self.__client_by_fileno:
+                            unregistered = False
+                            if detect_event & select.EPOLLOUT:
+                                if self.__epoll_send(detect_fileno) == False:
+                                    if self.__is_debug_mode.value:
+                                        self.__recv_queue.put_nowait({
+                                            "type" : "debug",
+                                            "message" : f"self.__epoll_send False"
+                                        })
+                                
+                                    if self.__unregister(detect_fileno):
+                                        unregistered = True
+                                        self.__close_client(detect_fileno)
+                                        self.__remove_client(detect_fileno)
+                            
+                            if detect_event & select.EPOLLIN:
+                                if self.__epoll_recv(detect_fileno) == False:
+                                    if self.__is_debug_mode.value:
+                                        self.__recv_queue.put_nowait({
+                                            "type" : "debug",
+                                            "message" : f"self.__epoll_recv False"
+                                        })
+                                
+                                    if self.__unregister(detect_fileno):
+                                        unregistered = True
+                                        self.__close_client(detect_fileno)
+                                        self.__remove_client(detect_fileno)
+                            
+                            if detect_event & (select.EPOLLHUP | select.EPOLLRDHUP):
+                                if self.__is_debug_mode.value:
+                                    self.__recv_queue.put_nowait({
+                                        "type" : "debug",
+                                        "message" : f"[{detect_fileno}] detect_event & (select.EPOLLHUP | select.EPOLLRDHUP)"
+                                    })
+                            
+                                if not unregistered:
+                                    if self.__unregister(detect_fileno):
+                                        self.__close_client(detect_fileno)
+                                        self.__remove_client(detect_fileno)
+                                
                         else:
                             if self.__is_debug_mode.value:
                                 self.__recv_queue.put_nowait({
                                     "type" : "debug",
-                                    "message" : f"listener got unknown event : {detect_event:#06x}"
+                                    "message" : f"[{detect_fileno:3}] Unknown Fileno. {detect_event:#06x}, exist:{detect_fileno in self.__client_by_fileno}"
                                 })
                         
-                    elif detect_fileno in self.__client_by_fileno:
-                        unregistered = False
-                        if detect_event & select.EPOLLOUT:
-                            if self.__epoll_send(detect_fileno) == False:
-                                if self.__is_debug_mode.value:
-                                    self.__recv_queue.put_nowait({
-                                        "type" : "debug",
-                                        "message" : f"self.__epoll_send False"
-                                    })
-                            
-                                if self.__unregister(detect_fileno):
-                                    unregistered = True
-                                    self.__close_client(detect_fileno)
-                                    self.__remove_client(detect_fileno)
-                        
-                        if detect_event & select.EPOLLIN:
-                            if self.__epoll_recv(detect_fileno) == False:
-                                if self.__is_debug_mode.value:
-                                    self.__recv_queue.put_nowait({
-                                        "type" : "debug",
-                                        "message" : f"self.__epoll_recv False"
-                                    })
-                            
-                                if self.__unregister(detect_fileno):
-                                    unregistered = True
-                                    self.__close_client(detect_fileno)
-                                    self.__remove_client(detect_fileno)
-                        
-                        if detect_event & (select.EPOLLHUP | select.EPOLLRDHUP):
-                            if self.__is_debug_mode.value:
-                                self.__recv_queue.put_nowait({
-                                    "type" : "debug",
-                                    "message" : f"[{detect_fileno}] detect_event & (select.EPOLLHUP | select.EPOLLRDHUP)"
-                                })
-                        
-                            if not unregistered:
-                                if self.__unregister(detect_fileno):
-                                    self.__close_client(detect_fileno)
-                                    self.__remove_client(detect_fileno)
-                            
-                    else:
-                        if self.__is_debug_mode.value:
-                            self.__recv_queue.put_nowait({
-                                "type" : "debug",
-                                "message" : f"[{detect_fileno:3}] Unknown Fileno. {detect_event:#06x}, exist:{detect_fileno in self.__client_by_fileno}"
-                            })
-                    
         except Exception as e:
             if self.__is_debug_mode.value:
                 self.__recv_queue.put_nowait({
