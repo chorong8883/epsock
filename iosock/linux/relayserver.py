@@ -13,7 +13,7 @@ class RelayServer():
     def __init__(self) -> None:
         self.__buffer_size = 8196
         self.__is_running = multiprocessing.Value(ctypes.c_bool, False)
-        self.__message_queue = None
+        self.__message_queue = queue.Queue()
         
         self.__running_threads = []
         self.__running_thread_by_tid = collections.defaultdict(threading.Thread)
@@ -39,7 +39,7 @@ class RelayServer():
         self.__client_by_relay_fileno = collections.defaultdict(socket.socket)
         self.__relay_by_client_fileno = collections.defaultdict(socket.socket)
         
-        self.__epoll = None
+        self.__epoll = select.epoll()
         
         self.__listener_eventmask = select.EPOLLIN | select.EPOLLPRI | select.EPOLLHUP | select.EPOLLRDHUP | select.EPOLLET
         self.__recv_eventmask = select.EPOLLIN  | select.EPOLLHUP | select.EPOLLRDHUP | select.EPOLLET
@@ -77,7 +77,7 @@ class RelayServer():
     def start(self, count_threads:int=1, message_queue = None ):
         self.__is_running.value = True
         self.__message_queue = message_queue
-        
+        self.__epoll.close()
         self.__epoll = select.epoll()
         self.__close_event, self.__close_event_listener = socket.socketpair()
         self.__epoll.register(self.__close_event_listener, self.__closer_eventmask)
@@ -113,25 +113,24 @@ class RelayServer():
                         registered_eventmask = self.__registered_eventmask_by_fileno.get(socket_fileno)
                         if registered_eventmask is not None and registered_eventmask != self.__send_recv_eventmask:
                             self.__registered_eventmask_by_fileno.update({socket_fileno : self.__send_recv_eventmask})
-                            if isinstance(self.__epoll, select.epoll):
-                                self.__epoll.modify(socket_fileno, self.__send_recv_eventmask)
+                            self.__epoll.modify(socket_fileno, self.__send_recv_eventmask)
                 
             except KeyError:
-                if self.__message_queue is not None and isinstance(self.__message_queue, queue.Queue):
+                if self.__message_queue is not None:
                     self.__message_queue.put_nowait({
                         "type" : "debug",
                         "message" : f"[{socket_fileno}] send KeyError.\n{traceback.format_exc()}"
                     })
                 
             except FileNotFoundError:
-                if self.__message_queue is not None and isinstance(self.__message_queue, queue.Queue):
+                if self.__message_queue is not None:
                     self.__message_queue.put_nowait({
                         "type" : "debug",
                         "message" : f"[{socket_fileno}] send FileNotFoundError.\n{traceback.format_exc()}"
                     })
                     
             except PermissionError:
-                if self.__message_queue is not None and isinstance(self.__message_queue, queue.Queue):
+                if self.__message_queue is not None:
                     self.__message_queue.put_nowait({
                         "type" : "debug",
                         "message" : f"[{socket_fileno}] send PermissionError.\n{traceback.format_exc()}"
@@ -151,7 +150,7 @@ class RelayServer():
                 
     def close(self):
         self.__is_running.value = False
-        if self.__message_queue is not None and isinstance(self.__message_queue, queue.Queue):
+        if self.__message_queue is not None:
             self.__message_queue.put_nowait(None)
         self.__shutdown_listeners()
         
@@ -173,8 +172,7 @@ class RelayServer():
         
     def __close_listener(self, listener_fileno:int):
         try:
-            if isinstance(self.__epoll, select.epoll):
-                self.__epoll.unregister(listener_fileno)
+            self.__epoll.unregister(listener_fileno)
         except FileNotFoundError:
             pass
         except OSError as e:
@@ -185,7 +183,7 @@ class RelayServer():
         listener = self.__listener_by_fileno.get(listener_fileno)
         if listener:
             listener.close()
-            if self.__message_queue is not None and isinstance(self.__message_queue, queue.Queue):
+            if self.__message_queue is not None:
                 self.__message_queue.put_nowait({
                     "type" : "debug",
                     "message" : f"[{listener_fileno:3}] Listner Close()"
@@ -201,24 +199,23 @@ class RelayServer():
         result = False
         try:
             _ = self.__registered_eventmask_by_fileno.pop(socket_fileno)
-            if isinstance(self.__epoll, select.epoll):
-                self.__epoll.unregister(socket_fileno)
+            self.__epoll.unregister(socket_fileno)
             result = True
-            if self.__message_queue is not None and isinstance(self.__message_queue, queue.Queue):
+            if self.__message_queue is not None:
                 self.__message_queue.put_nowait({
                     "type" : "debug",
                     "message" : f"[{socket_fileno:3}] epoll unregister."
                 })
 
         except KeyError:
-            if self.__message_queue is not None and isinstance(self.__message_queue, queue.Queue):
+            if self.__message_queue is not None:
                 self.__message_queue.put_nowait({
                     "type" : "debug",
                     "message" : f"[{socket_fileno}] __unregister KeyError.\n{traceback.format_exc()}"
                 })
             
         except FileNotFoundError:
-            if self.__message_queue is not None and isinstance(self.__message_queue, queue.Queue):
+            if self.__message_queue is not None:
                 self.__message_queue.put_nowait({
                     "type" : "debug",
                     "message" : f"[{socket_fileno}] __unregister FileNotFoundError.\n{traceback.format_exc()}"
@@ -231,7 +228,7 @@ class RelayServer():
                 raise e
             
         except Exception as e:
-            if self.__message_queue is not None and isinstance(self.__message_queue, queue.Queue):
+            if self.__message_queue is not None:
                 self.__message_queue.put_nowait({
                     "type" : "debug",
                     "message" : f"[{socket_fileno}] send Exception: {e}.\n{traceback.format_exc()}"
@@ -258,7 +255,7 @@ class RelayServer():
                 else:
                     raise e
             except Exception as e:
-                if self.__message_queue is not None and isinstance(self.__message_queue, queue.Queue):
+                if self.__message_queue is not None:
                     self.__message_queue.put_nowait({
                         "type" : "debug",
                         "message" : f"[{socket_fileno}] send Exception: {e}.\n{traceback.format_exc()}"
@@ -269,7 +266,7 @@ class RelayServer():
         client_socket = self.__client_by_fileno.get(client_fileno)
         if client_socket:
             client_socket.close()
-            if self.__message_queue is not None and isinstance(self.__message_queue, queue.Queue):
+            if self.__message_queue is not None:
                 self.__message_queue.put_nowait({
                     "type" : "debug",
                     "message" : f"[{client_fileno:3}] Client Closed."
@@ -295,7 +292,7 @@ class RelayServer():
         except KeyError: pass
         
         if 0 < len_remain_send_buffer:
-            if self.__message_queue is not None and isinstance(self.__message_queue, queue.Queue):
+            if self.__message_queue is not None:
                 self.__message_queue.put_nowait({
                     "type" : "debug",
                     "message" : f"[{client_fileno}] Try Close. send buffer remain:{len_remain_send_buffer} bytes."
@@ -307,7 +304,7 @@ class RelayServer():
             client_socket = None
             try:
                 client_socket, address = listener.accept()
-                if self.__message_queue is not None and isinstance(self.__message_queue, queue.Queue):
+                if self.__message_queue is not None:
                     self.__message_queue.put_nowait({
                         "type" : "debug",
                         "message" : f"accept {client_socket.fileno():3}:{address}"
@@ -329,8 +326,7 @@ class RelayServer():
                 self.__listener_fileno_by_client_fileno.update({client_socket_fileno : listener_fileno})
                 
                 self.__registered_eventmask_by_fileno.update({client_socket_fileno : self.__recv_eventmask})
-                if isinstance(self.__epoll, select.epoll):
-                    self.__epoll.register(client_socket, self.__recv_eventmask)
+                self.__epoll.register(client_socket, self.__recv_eventmask)
             except BlockingIOError as e:
                 if e.errno == socket.EAGAIN:
                     return
@@ -355,15 +351,14 @@ class RelayServer():
                         relay_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                         relay_socket.setblocking(False)
                         relay_socket_fileno = relay_socket.fileno()
-                        if self.__message_queue is not None and isinstance(self.__message_queue, queue.Queue):
+                        if self.__message_queue is not None:
                             self.__message_queue.put_nowait({
                                 "type" : "debug",
                                 "message" : f"Client fileno:{client_socket.fileno()} -> Relay fileno:{relay_socket_fileno}"
                             })
                             
                         self.__registered_eventmask_by_fileno.update({relay_socket_fileno : self.__recv_eventmask})
-                        if isinstance(self.__epoll, select.epoll):
-                            self.__epoll.register(relay_socket_fileno, self.__recv_eventmask)
+                        self.__epoll.register(relay_socket_fileno, self.__recv_eventmask)
                         
                         self.__socket_by_fileno.update({relay_socket_fileno : relay_socket})
                         self.__relay_by_fileno.update({relay_socket_fileno : relay_socket})
@@ -416,8 +411,7 @@ class RelayServer():
 
                     if not is_eagain and is_connect:
                         try:
-                            if isinstance(self.__epoll, select.epoll):
-                                self.__epoll.modify(recv_socket_fileno, self.__registered_eventmask_by_fileno[recv_socket_fileno])
+                            self.__epoll.modify(recv_socket_fileno, self.__registered_eventmask_by_fileno[recv_socket_fileno])
                         except FileNotFoundError:
                             pass
                         except OSError as e:
@@ -440,7 +434,7 @@ class RelayServer():
                         with send_buffer_lock:
                             send_buffer = self.__send_buffer_by_fileno.get(client_fileno)
                     else:
-                        if self.__message_queue is not None and isinstance(self.__message_queue, queue.Queue):
+                        if self.__message_queue is not None:
                             self.__message_queue.put_nowait({
                                 "type" : "debug",
                                 "message" : f"[{client_fileno}] is_connect = False send_buffer_lock is {send_buffer_lock}"
@@ -455,7 +449,7 @@ class RelayServer():
                                         with send_buffer_lock:
                                             self.__send_buffer_by_fileno.update({client_fileno : send_buffer[sent_length:]})
                                     else:
-                                        if self.__message_queue is not None and isinstance(self.__message_queue, queue.Queue):
+                                        if self.__message_queue is not None:
                                             self.__message_queue.put_nowait({
                                                 "type" : "debug",
                                                 "message" : f"[{client_fileno}] is_connect = False send_buffer_lock is {send_buffer_lock}"
@@ -477,7 +471,7 @@ class RelayServer():
                                 else:
                                     raise e
                     else:
-                        if self.__message_queue is not None and isinstance(self.__message_queue, queue.Queue):
+                        if self.__message_queue is not None:
                             self.__message_queue.put_nowait({
                                 "type" : "debug",
                                 "message" : f"[{client_fileno}] is_connect = False send_buffer is {send_buffer}"
@@ -486,7 +480,7 @@ class RelayServer():
                         is_connect = False
 
             else:
-                if self.__message_queue is not None and isinstance(self.__message_queue, queue.Queue):
+                if self.__message_queue is not None:
                     self.__message_queue.put_nowait({
                         "type" : "debug",
                         "message" : f"[{client_fileno}] is_connect = False send_lock is {send_lock} and client_socket is {client_socket}"
@@ -505,15 +499,14 @@ class RelayServer():
                     remain_buffer == b'' and\
                     registered_eventmask != self.__recv_eventmask:
                     self.__registered_eventmask_by_fileno.update({client_fileno : self.__recv_eventmask})
-                    if isinstance(self.__epoll, select.epoll):
-                        self.__epoll.modify(client_fileno, self.__recv_eventmask)
+                    self.__epoll.modify(client_fileno, self.__recv_eventmask)
             
             except OSError as e:
                 if e.errno == errno.EBADF:
                     is_connect = False
                         
         except Exception as e:
-            if self.__message_queue is not None and isinstance(self.__message_queue, queue.Queue):
+            if self.__message_queue is not None:
                 self.__message_queue.put_nowait({
                     "type" : "debug",
                     "message" : f"[{client_fileno}] __epoll_send Excetion:{e}.\n{traceback.format_exc()}"
@@ -526,106 +519,105 @@ class RelayServer():
     def __epoll_thread_function(self):
         __is_running = True
         tid = threading.get_ident()
-        if self.__message_queue is not None and isinstance(self.__message_queue, queue.Queue):
+        if self.__message_queue is not None:
             self.__message_queue.put_nowait({
                 "type" : "debug",
                 "message" : f"Start Epoll Work"
             })
         
         try:
-            if isinstance(self.__epoll, select.epoll):
-                while __is_running:
-                    events = self.__epoll.poll()
-                    for detect_fileno, detect_event in events:
-                        if detect_event & select.EPOLLPRI:
-                            if self.__message_queue is not None and isinstance(self.__message_queue, queue.Queue):
+            while __is_running:
+                events = self.__epoll.poll()
+                for detect_fileno, detect_event in events:
+                    if detect_event & select.EPOLLPRI:
+                        if self.__message_queue is not None:
+                            self.__message_queue.put_nowait({
+                                "type" : "debug",
+                                "message" : f"EPOLLPRI [{detect_event:#06x} & select.EPOLLPRI]"
+                            })
+                        
+                    if detect_fileno == self.__close_event_listener.fileno():
+                        self.__close_event_listener.send(tid.to_bytes(32, 'big'))
+                        __is_running = False
+                        
+                    elif detect_fileno in self.__listener_by_fileno:
+                        if detect_event & (select.EPOLLHUP | select.EPOLLRDHUP):
+                            self.__shutdown_clients_by_listener(detect_fileno)
+                            if self.__unregister(detect_fileno):
+                                self.__close_listener(detect_fileno)
+                                self.__remove_listener(detect_fileno)
+                            
+                        elif detect_event & select.EPOLLIN:
+                            self.__epoll_accept(detect_fileno)
+                        
+                        else:
+                            if self.__message_queue is not None:
                                 self.__message_queue.put_nowait({
                                     "type" : "debug",
-                                    "message" : f"EPOLLPRI [{detect_event:#06x} & select.EPOLLPRI]"
+                                    "message" : f"listen event else [{detect_event:#06x}]..?"
                                 })
                             
-                        if detect_fileno == self.__close_event_listener.fileno():
-                            self.__close_event_listener.send(tid.to_bytes(32, 'big'))
-                            __is_running = False
-                            
-                        elif detect_fileno in self.__listener_by_fileno:
-                            if detect_event & (select.EPOLLHUP | select.EPOLLRDHUP):
-                                self.__shutdown_clients_by_listener(detect_fileno)
-                                if self.__unregister(detect_fileno):
-                                    self.__close_listener(detect_fileno)
-                                    self.__remove_listener(detect_fileno)
-                                
-                            elif detect_event & select.EPOLLIN:
-                                self.__epoll_accept(detect_fileno)
-                            
-                            else:
-                                if self.__message_queue is not None and isinstance(self.__message_queue, queue.Queue):
-                                    self.__message_queue.put_nowait({
-                                        "type" : "debug",
-                                        "message" : f"listen event else [{detect_event:#06x}]..?"
-                                    })
-                                
-                        else:
-                            if detect_event & select.EPOLLOUT:
-                                if self.__epoll_send(detect_fileno) == False:
-                                    if self.__unregister(detect_fileno):
-                                        self.__close_client(detect_fileno)
-                                        self.__remove_client(detect_fileno)
-                            
-                            if detect_event & select.EPOLLIN:
-                                from_socket = None
-                                to_socket = None
-                                if detect_fileno in self.__client_by_fileno:
-                                    from_socket = self.__client_by_fileno.get(detect_fileno)
-                                    to_socket = self.__relay_by_client_fileno.get(detect_fileno)
-                                    
-                                elif detect_fileno in self.__relay_by_fileno:
-                                    from_socket = self.__relay_by_fileno.get(detect_fileno)
-                                    to_socket = self.__client_by_relay_fileno.get(detect_fileno)
-                                
-                                if from_socket and to_socket:
-                                    recv_bytes = self.__epoll_recv(from_socket)
-                                    if recv_bytes:
-                                        if self.check_relay_function:
-                                            if self.check_relay_function(from_socket.fileno(), to_socket.fileno(), recv_bytes):
-                                                self.send(to_socket.fileno(), recv_bytes)
-                                        else:
-                                            self.send(to_socket.fileno(), recv_bytes)
-                                        
-                            if detect_event & (select.EPOLLHUP | select.EPOLLRDHUP):
-                                to_socket_fileno = None
-                                if detect_fileno in self.__client_by_fileno:
-                                    to_socket = self.__relay_by_client_fileno.get(detect_fileno)
-                                    if to_socket:
-                                        to_socket_fileno = to_socket.fileno()
-                                        
-                                elif detect_fileno in self.__relay_by_fileno:
-                                    to_socket = self.__client_by_relay_fileno.get(detect_fileno)
-                                    if to_socket:
-                                        to_socket_fileno = to_socket.fileno()
-                                        
-                                if to_socket_fileno:
-                                    self.__shutdown_client(to_socket_fileno)
-                                
+                    else:
+                        if detect_event & select.EPOLLOUT:
+                            if self.__epoll_send(detect_fileno) == False:
                                 if self.__unregister(detect_fileno):
                                     self.__close_client(detect_fileno)
                                     self.__remove_client(detect_fileno)
+                        
+                        if detect_event & select.EPOLLIN:
+                            from_socket = None
+                            to_socket = None
+                            if detect_fileno in self.__client_by_fileno:
+                                from_socket = self.__client_by_fileno.get(detect_fileno)
+                                to_socket = self.__relay_by_client_fileno.get(detect_fileno)
                                 
-                            elif not detect_event & (select.EPOLLIN | select.EPOLLOUT):
-                                if self.__message_queue:
-                                    self.__message_queue.put_nowait({
-                                        "type" : "debug",
-                                        "message" : f"Unknown Event. {detect_event:#06x}, exist:{detect_fileno in self.__client_by_fileno}"
-                                    })
+                            elif detect_fileno in self.__relay_by_fileno:
+                                from_socket = self.__relay_by_fileno.get(detect_fileno)
+                                to_socket = self.__client_by_relay_fileno.get(detect_fileno)
+                            
+                            if from_socket and to_socket:
+                                recv_bytes = self.__epoll_recv(from_socket)
+                                if recv_bytes:
+                                    if self.check_relay_function:
+                                        if self.check_relay_function(from_socket.fileno(), to_socket.fileno(), recv_bytes):
+                                            self.send(to_socket.fileno(), recv_bytes)
+                                    else:
+                                        self.send(to_socket.fileno(), recv_bytes)
+                                    
+                        if detect_event & (select.EPOLLHUP | select.EPOLLRDHUP):
+                            to_socket_fileno = None
+                            if detect_fileno in self.__client_by_fileno:
+                                to_socket = self.__relay_by_client_fileno.get(detect_fileno)
+                                if to_socket:
+                                    to_socket_fileno = to_socket.fileno()
+                                    
+                            elif detect_fileno in self.__relay_by_fileno:
+                                to_socket = self.__client_by_relay_fileno.get(detect_fileno)
+                                if to_socket:
+                                    to_socket_fileno = to_socket.fileno()
+                                    
+                            if to_socket_fileno:
+                                self.__shutdown_client(to_socket_fileno)
+                            
+                            if self.__unregister(detect_fileno):
+                                self.__close_client(detect_fileno)
+                                self.__remove_client(detect_fileno)
+                            
+                        elif not detect_event & (select.EPOLLIN | select.EPOLLOUT):
+                            if self.__message_queue:
+                                self.__message_queue.put_nowait({
+                                    "type" : "debug",
+                                    "message" : f"Unknown Event. {detect_event:#06x}, exist:{detect_fileno in self.__client_by_fileno}"
+                                })
                                 
         except Exception as e:
-            if self.__message_queue is not None and isinstance(self.__message_queue, queue.Queue):
+            if self.__message_queue is not None:
                 self.__message_queue.put_nowait({
                     "type" : "debug",
                     "message" : f"{e}, {traceback.format_exc()}"
                 })
             
-        if self.__message_queue is not None and isinstance(self.__message_queue, queue.Queue):
+        if self.__message_queue is not None:
             self.__message_queue.put_nowait({
                 "type" : "debug",
                 "message" : f"Finish Epoll Work"
