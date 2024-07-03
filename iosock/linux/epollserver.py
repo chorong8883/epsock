@@ -76,8 +76,8 @@ class EpollServer():
         self.__is_running.value = True
         self.__is_debug_mode.value = is_debug_mode
         
-        self.__epoll.close()
-        self.__epoll = select.epoll()
+        if self.__epoll is None or self.__epoll.closed:
+            self.__epoll = select.epoll()
         self.__close_event, self.__close_event_listener = socket.socketpair()
         self.__epoll.register(self.__close_event_listener, self.__closer_eventmask)
         

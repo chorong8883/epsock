@@ -77,8 +77,9 @@ class RelayServer():
     def start(self, count_threads:int=1, message_queue = None ):
         self.__is_running.value = True
         self.__message_queue = message_queue
-        self.__epoll.close()
-        self.__epoll = select.epoll()
+        
+        if self.__epoll is None or self.__epoll.closed:
+            self.__epoll = select.epoll()
         self.__close_event, self.__close_event_listener = socket.socketpair()
         self.__epoll.register(self.__close_event_listener, self.__closer_eventmask)
         
